@@ -1,0 +1,8 @@
+# PPC Flight Recorder – standalone project (run separately from Leonardo)
+google-ads>=23.0.0
+snowflake-connector-python>=3.0.0
+pandas>=1.5.0
+httpx>=0.24.0
+python-dotenv>=1.0.0
+# Optional: for Snowflake key-pair auth (SNOWFLAKE_PRIVATE_KEY_PATH)
+cryptography>=41.0.0
