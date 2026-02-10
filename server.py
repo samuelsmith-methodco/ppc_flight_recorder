@@ -1,0 +1,196 @@
+"""
+PPC Flight Recorder – FastAPI server with daily sync scheduler.
+
+Runs Uvicorn on port 9001. Scheduler runs daily sync (Google Ads + GA4 + diffs) at a set time.
+
+  cd ppc_flight_recorder
+  pip install -r requirements.txt
+  uvicorn server:app --host 0.0.0.0 --port 9001
+
+  Optional .env: SYNC_SCHEDULE_HOUR=2, SYNC_SCHEDULE_MINUTE=0 (default 02:00).
+"""
+
+import logging
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import Body, FastAPI, HTTPException
+from pydantic import BaseModel
+
+from config import PPC_PROJECTS, SYNC_SCHEDULE_HOUR, SYNC_SCHEDULE_MINUTE
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# Scheduler and state (set in lifespan)
+_scheduler = None
+_last_sync_result: Optional[dict] = None
+
+
+def _run_daily_sync() -> None:
+    """Run daily sync for last 2 days + today (3 dates), all projects, GA4 + diffs. Called by scheduler."""
+    global _last_sync_result
+    from sync import run_sync
+
+    today = date.today()
+    # Sync: today-2, today-1, today
+    dates_to_sync = [
+        today - timedelta(days=2),
+        today - timedelta(days=1),
+        today,
+    ]
+    projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
+    completed = []
+    last_error = None
+    for snapshot_date in dates_to_sync:
+        try:
+            run_sync(
+                snapshot_date=snapshot_date,
+                projects=projects,
+                run_ga4=True,
+            )
+            completed.append(snapshot_date.isoformat())
+            logger.info("Scheduled daily sync completed for %s", snapshot_date.isoformat())
+        except Exception as e:
+            last_error = str(e)
+            logger.exception("Scheduled daily sync failed for %s: %s", snapshot_date.isoformat(), e)
+            _last_sync_result = {
+                "status": "error",
+                "snapshot_date": snapshot_date.isoformat(),
+                "completed_dates": completed,
+                "error": last_error,
+            }
+            raise
+    _last_sync_result = {
+        "status": "ok",
+        "snapshot_dates": completed,
+        "projects": projects,
+    }
+    logger.info("Scheduled daily sync completed for all dates: %s", ", ".join(completed))
+
+
+def _get_scheduler():
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    sched = BackgroundScheduler(timezone="UTC")
+    sched.add_job(
+        _run_daily_sync,
+        trigger="cron",
+        hour=SYNC_SCHEDULE_HOUR,
+        minute=SYNC_SCHEDULE_MINUTE,
+        id="daily_sync",
+    )
+    return sched
+
+
+def _format_time_until(next_run: Optional[datetime]) -> str:
+    """Return human-readable string: e.g. '5.2 hours' or '23 minutes' or 'next run in < 1 min'."""
+    if not next_run:
+        return "unknown"
+    now = datetime.now(timezone.utc)
+    if next_run.tzinfo is None:
+        next_run = next_run.replace(tzinfo=timezone.utc)
+    delta = next_run - now
+    total_seconds = max(0, delta.total_seconds())
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    if hours >= 1:
+        return f"{hours}h {minutes}m" if minutes else f"{hours} hours"
+    if minutes >= 1:
+        return f"{minutes} minutes"
+    return "< 1 minute"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _scheduler
+    _scheduler = _get_scheduler()
+    _scheduler.start()
+    job = _scheduler.get_job("daily_sync")
+    next_run = job.next_run_time if job else None
+    time_left = _format_time_until(next_run)
+    next_iso = next_run.isoformat() if next_run else "?"
+    logger.info(
+        "Scheduler started: daily sync at %02d:%02d UTC (last 2 days + today, GA4 + diffs); next run in %s (%s)",
+        SYNC_SCHEDULE_HOUR,
+        SYNC_SCHEDULE_MINUTE,
+        time_left,
+        next_iso,
+    )
+    yield
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+        _scheduler = None
+    logger.info("Scheduler stopped.")
+
+
+app = FastAPI(
+    title="PPC Flight Recorder",
+    description="Daily sync of Google Ads and GA4 data to Snowflake, with optional manual trigger.",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health")
+def health():
+    """Health check for load balancers / readiness."""
+    return {"status": "ok", "service": "ppc-flight-recorder"}
+
+
+@app.get("/schedule")
+def schedule():
+    """Return current schedule, next run time, and hours/minutes until next run."""
+    if not _scheduler:
+        return {"scheduler": "not_running", "schedule": None}
+    job = _scheduler.get_job("daily_sync")
+    next_run = job.next_run_time if job else None
+    next_run_iso = next_run.isoformat() if next_run else None
+    time_left = _format_time_until(next_run)
+    return {
+        "scheduler": "running",
+        "schedule": {
+            "hour_utc": SYNC_SCHEDULE_HOUR,
+            "minute_utc": SYNC_SCHEDULE_MINUTE,
+            "next_run_utc": next_run_iso,
+            "next_run_in": time_left,
+        },
+        "last_sync": _last_sync_result,
+    }
+
+
+class SyncRequest(BaseModel):
+    date: Optional[str] = None  # YYYY-MM-DD; default yesterday
+
+
+@app.post("/sync")
+def trigger_sync(body: Optional[SyncRequest] = Body(None)):
+    """
+    Run sync once (same as daily job: GA4 + diffs).
+    Optional body: {"date": "2025-02-09"} to sync a specific date; default is yesterday.
+    """
+    from sync import run_sync
+
+    if body and body.date:
+        try:
+            snapshot_date = date.fromisoformat(body.date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date; use YYYY-MM-DD")
+    else:
+        snapshot_date = date.today() - timedelta(days=1)
+
+    projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
+    try:
+        run_sync(
+            snapshot_date=snapshot_date,
+            projects=projects,
+            run_ga4=True,
+        )
+        return {
+            "status": "ok",
+            "snapshot_date": snapshot_date.isoformat(),
+            "projects": projects,
+        }
+    except Exception as e:
+        logger.exception("Manual sync failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))

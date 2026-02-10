@@ -50,6 +50,10 @@ GA4_MARKETING_API_URL = os.getenv("GA4_MARKETING_API_URL", "")
 # Projects to sync (comma-separated)
 PPC_PROJECTS = os.getenv("PPC_PROJECTS", "the-pinch")
 
+# Daily sync scheduler (server only): hour and minute in server local time (24h)
+SYNC_SCHEDULE_HOUR = int(os.getenv("SYNC_SCHEDULE_HOUR", "2"))   # default 02:00
+SYNC_SCHEDULE_MINUTE = int(os.getenv("SYNC_SCHEDULE_MINUTE", "0"))
+
 
 def normalize_customer_id(customer_id: Optional[str]) -> str:
     """Normalize Google Ads customer ID for storage (no dashes)."""

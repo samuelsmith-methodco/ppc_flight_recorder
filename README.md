@@ -37,6 +37,7 @@ Edit `.env` and set:
 | **Google Ads** | `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, and per-project `GOOGLE_ADS_CUSTOMER_ID_*` or `GOOGLE_ADS_CUSTOMER_ID` |
 | **GA4** | `GA4_MARKETING_API_URL` – deployed Apps Script “exec” URL. The handler for `type: "traffic_acquisition_daily"` lives in this repo under `gs_backend/` (TrafficAcquisitionDaily.gs + Post.gs); deploy that web app and use its URL here. |
 | **PPC** | `PPC_PROJECTS` – comma-separated list (e.g. `the-pinch,the-nickel`); default `the-pinch` |
+| **Scheduler** (server only) | `SYNC_SCHEDULE_HOUR` (0–23, UTC), `SYNC_SCHEDULE_MINUTE` (0–59); default 02:00 UTC |
 
 Do **not** commit `.env`.
 
@@ -79,6 +80,37 @@ Cron example (daily at 2 AM with GA4):
 0 2 * * * cd /path/to/ppc_flight_recorder && .venv/Scripts/python sync.py --ga4
 ```
 
+### FastAPI server with daily scheduler (Uvicorn, port 9001)
+
+Runs a small API and a **daily scheduler** that runs the sync (including GA4 and diffs) at a set time every day.
+
+From the `ppc_flight_recorder` folder, activate the virtualenv then start Uvicorn:
+
+```bash
+# Windows
+.venv\Scripts\activate
+uvicorn server:app --host 0.0.0.0 --port 9001
+```
+
+```bash
+# macOS / Linux
+source .venv/bin/activate
+uvicorn server:app --host 0.0.0.0 --port 9001
+```
+
+The server listens on **port 9001**. To use a different port: `uvicorn server:app --host 0.0.0.0 --port 8000`
+
+- **Scheduler**: Runs daily at `SYNC_SCHEDULE_HOUR:SYNC_SCHEDULE_MINUTE` UTC (default 02:00). Syncs **last 2 days + today** (3 dates), all projects in `PPC_PROJECTS`, with GA4 and outcome/GA4 diffs.
+- **Endpoints**:
+  - `GET /health` – health check
+  - `GET /schedule` – current schedule and next run time
+  - `POST /sync` – trigger sync once (optional body: `{"date": "YYYY-MM-DD"}` for a specific date; default yesterday)
+
+Set in `.env` to change the daily run time (UTC):
+
+- `SYNC_SCHEDULE_HOUR=2`
+- `SYNC_SCHEDULE_MINUTE=0`
+
 ## Project structure
 
 ```
@@ -91,6 +123,7 @@ ppc_flight_recorder/
   google_ads_client.py  # Google Ads API: control state + campaigns
   ga4_client.py        # GA4 traffic acquisition via Apps Script
   sync.py              # Entry point: python sync.py
+  server.py             # FastAPI + Uvicorn (port 9001) with daily sync scheduler
   sql/
     ppc-flight-recorder-tables.sql
   requirements.txt

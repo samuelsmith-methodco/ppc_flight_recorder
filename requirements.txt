@@ -6,3 +6,8 @@ httpx>=0.24.0
 python-dotenv>=1.0.0
 # Optional: for Snowflake key-pair auth (SNOWFLAKE_PRIVATE_KEY_PATH)
 cryptography>=41.0.0
+
+# FastAPI server and scheduler
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+apscheduler>=3.10.0
