@@ -50,9 +50,11 @@ GA4_MARKETING_API_URL = os.getenv("GA4_MARKETING_API_URL", "")
 # Projects to sync (comma-separated)
 PPC_PROJECTS = os.getenv("PPC_PROJECTS", "the-pinch")
 
-# Daily sync scheduler (server only): hour and minute in server local time (24h)
-SYNC_SCHEDULE_HOUR = int(os.getenv("SYNC_SCHEDULE_HOUR", "2"))   # default 02:00
-SYNC_SCHEDULE_MINUTE = int(os.getenv("SYNC_SCHEDULE_MINUTE", "0"))
+# Daily sync scheduler (server only): timezone and local time (24h)
+# Use IANA timezone (e.g. America/New_York for EST/EDT). Hour/minute are in that timezone.
+SYNC_SCHEDULE_TIMEZONE = os.getenv("SYNC_SCHEDULE_TIMEZONE", "America/New_York")
+SYNC_SCHEDULE_HOUR = int(os.getenv("SYNC_SCHEDULE_HOUR", "21"))   # default 9:30 PM EST
+SYNC_SCHEDULE_MINUTE = int(os.getenv("SYNC_SCHEDULE_MINUTE", "30"))
 
 
 def normalize_customer_id(customer_id: Optional[str]) -> str:

@@ -37,7 +37,7 @@ Edit `.env` and set:
 | **Google Ads** | `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, and per-project `GOOGLE_ADS_CUSTOMER_ID_*` or `GOOGLE_ADS_CUSTOMER_ID` |
 | **GA4** | `GA4_MARKETING_API_URL` – deployed Apps Script “exec” URL. The handler for `type: "traffic_acquisition_daily"` lives in this repo under `gs_backend/` (TrafficAcquisitionDaily.gs + Post.gs); deploy that web app and use its URL here. |
 | **PPC** | `PPC_PROJECTS` – comma-separated list (e.g. `the-pinch,the-nickel`); default `the-pinch` |
-| **Scheduler** (server only) | `SYNC_SCHEDULE_HOUR` (0–23, UTC), `SYNC_SCHEDULE_MINUTE` (0–59); default 02:00 UTC |
+| **Scheduler** (server only) | `SYNC_SCHEDULE_TIMEZONE` (e.g. `America/New_York`), `SYNC_SCHEDULE_HOUR` (0–23), `SYNC_SCHEDULE_MINUTE` (0–59); default 9:30 PM EST |
 
 Do **not** commit `.env`.
 
@@ -100,16 +100,17 @@ uvicorn server:app --host 0.0.0.0 --port 9001
 
 The server listens on **port 9001**. To use a different port: `uvicorn server:app --host 0.0.0.0 --port 8000`
 
-- **Scheduler**: Runs daily at `SYNC_SCHEDULE_HOUR:SYNC_SCHEDULE_MINUTE` UTC (default 02:00). Syncs **last 2 days + today** (3 dates), all projects in `PPC_PROJECTS`, with GA4 and outcome/GA4 diffs.
+- **Scheduler**: Runs daily at `SYNC_SCHEDULE_HOUR:SYNC_SCHEDULE_MINUTE` in `SYNC_SCHEDULE_TIMEZONE` (default **9:30 PM America/New_York**). Syncs **last 2 days + today** (3 dates), all projects in `PPC_PROJECTS`, with GA4 and outcome/GA4 diffs.
 - **Endpoints**:
   - `GET /health` – health check
   - `GET /schedule` – current schedule and next run time
   - `POST /sync` – trigger sync once (optional body: `{"date": "YYYY-MM-DD"}` for a specific date; default yesterday)
 
-Set in `.env` to change the daily run time (UTC):
+Set in `.env` to change the daily run time (e.g. 9:30 PM EST):
 
-- `SYNC_SCHEDULE_HOUR=2`
-- `SYNC_SCHEDULE_MINUTE=0`
+- `SYNC_SCHEDULE_TIMEZONE=America/New_York`
+- `SYNC_SCHEDULE_HOUR=21`
+- `SYNC_SCHEDULE_MINUTE=30`
 
 ## Project structure
 

@@ -7,7 +7,7 @@ Runs Uvicorn on port 9001. Scheduler runs daily sync (Google Ads + GA4 + diffs) 
   pip install -r requirements.txt
   uvicorn server:app --host 0.0.0.0 --port 9001
 
-  Optional .env: SYNC_SCHEDULE_HOUR=2, SYNC_SCHEDULE_MINUTE=0 (default 02:00).
+  Optional .env: SYNC_SCHEDULE_TIMEZONE, SYNC_SCHEDULE_HOUR, SYNC_SCHEDULE_MINUTE (default 9:30 PM America/New_York).
 """
 
 import logging
@@ -18,7 +18,12 @@ from typing import Optional
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from config import PPC_PROJECTS, SYNC_SCHEDULE_HOUR, SYNC_SCHEDULE_MINUTE
+from config import (
+    PPC_PROJECTS,
+    SYNC_SCHEDULE_HOUR,
+    SYNC_SCHEDULE_MINUTE,
+    SYNC_SCHEDULE_TIMEZONE,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -73,7 +78,7 @@ def _run_daily_sync() -> None:
 def _get_scheduler():
     from apscheduler.schedulers.background import BackgroundScheduler
 
-    sched = BackgroundScheduler(timezone="UTC")
+    sched = BackgroundScheduler(timezone=SYNC_SCHEDULE_TIMEZONE)
     sched.add_job(
         _run_daily_sync,
         trigger="cron",
@@ -85,13 +90,12 @@ def _get_scheduler():
 
 
 def _format_time_until(next_run: Optional[datetime]) -> str:
-    """Return human-readable string: e.g. '5.2 hours' or '23 minutes' or 'next run in < 1 min'."""
+    """Return human-readable string: e.g. '5h 23m' or '23 minutes' or '< 1 minute'."""
     if not next_run:
         return "unknown"
     now = datetime.now(timezone.utc)
-    if next_run.tzinfo is None:
-        next_run = next_run.replace(tzinfo=timezone.utc)
-    delta = next_run - now
+    next_utc = next_run.astimezone(timezone.utc) if next_run.tzinfo else next_run.replace(tzinfo=timezone.utc)
+    delta = next_utc - now
     total_seconds = max(0, delta.total_seconds())
     hours = int(total_seconds // 3600)
     minutes = int((total_seconds % 3600) // 60)
@@ -112,9 +116,10 @@ async def lifespan(app: FastAPI):
     time_left = _format_time_until(next_run)
     next_iso = next_run.isoformat() if next_run else "?"
     logger.info(
-        "Scheduler started: daily sync at %02d:%02d UTC (last 2 days + today, GA4 + diffs); next run in %s (%s)",
+        "Scheduler started: daily sync at %02d:%02d %s (last 2 days + today, GA4 + diffs); next run in %s (%s)",
         SYNC_SCHEDULE_HOUR,
         SYNC_SCHEDULE_MINUTE,
+        SYNC_SCHEDULE_TIMEZONE,
         time_left,
         next_iso,
     )
@@ -150,9 +155,10 @@ def schedule():
     return {
         "scheduler": "running",
         "schedule": {
-            "hour_utc": SYNC_SCHEDULE_HOUR,
-            "minute_utc": SYNC_SCHEDULE_MINUTE,
-            "next_run_utc": next_run_iso,
+            "timezone": SYNC_SCHEDULE_TIMEZONE,
+            "hour": SYNC_SCHEDULE_HOUR,
+            "minute": SYNC_SCHEDULE_MINUTE,
+            "next_run": next_run_iso,
             "next_run_in": time_left,
         },
         "last_sync": _last_sync_result,
