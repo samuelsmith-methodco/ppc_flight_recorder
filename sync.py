@@ -42,13 +42,16 @@ from storage import (
     insert_keyword_outcomes_diff_daily,
     insert_outcomes_diff_daily,
     upsert_ad_group_dims,
+    upsert_ad_group_outcomes_batch,
     upsert_ad_group_outcomes_daily,
     upsert_campaign_dims,
     upsert_control_state_daily,
     upsert_ga4_acquisition_daily,
     upsert_ga4_traffic_acquisition_daily,
     upsert_keyword_dims,
+    upsert_keyword_outcomes_batch,
     upsert_keyword_outcomes_daily,
+    upsert_outcomes_batch,
     upsert_outcomes_daily,
 )
 
@@ -65,8 +68,11 @@ GA4_ACQUISITION_METRIC_FIELDS = [
     "average_session_duration_sec", "engagement_rate", "bounce_rate",
 ]
 
-# Max rows per GA4 MERGE in historical backfill to avoid timeouts
+# Max rows per MERGE in historical backfill to avoid timeouts
 GA4_UPSERT_BATCH_SIZE = 2000
+OUTCOMES_UPSERT_BATCH_SIZE = 1000  # Batch size for campaign outcomes upserts
+AD_GROUP_UPSERT_BATCH_SIZE = 1000  # Batch size for ad group outcomes upserts
+KEYWORD_UPSERT_BATCH_SIZE = 1000   # Batch size for keyword outcomes upserts
 
 
 def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -338,7 +344,7 @@ def run_historical_sync(
             chunk_end_str = chunk_end.isoformat()
             logger.info("Historical batch: %s .. %s", chunk_start_str, chunk_end_str)
 
-            # Google Ads outcomes: fetch per project for chunk range, then upsert per day (using customer_id)
+            # Google Ads outcomes: fetch per project for chunk range, then batch upsert all at once
             for project in projects:
                 customer_id = normalize_customer_id(get_google_ads_customer_id(project))
                 try:
@@ -349,29 +355,47 @@ def run_historical_sync(
                         project=project,
                         google_ads_filters=google_ads_filters,
                     )
-                    by_date: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+                    # Add customer_id to all rows for batch upsert
                     if daily_rows:
+                        for r in daily_rows:
+                            r["customer_id"] = customer_id
+                        # Batch upsert all rows in chunks
+                        for i in range(0, len(daily_rows), OUTCOMES_UPSERT_BATCH_SIZE):
+                            chunk_rows = daily_rows[i : i + OUTCOMES_UPSERT_BATCH_SIZE]
+                            upsert_outcomes_batch(chunk_rows, conn=conn)
+                        # Upsert campaign dims (grouped by date for dims)
+                        by_date: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
                         for r in daily_rows:
                             d = r.get("outcome_date")
                             if d:
                                 by_date[d].append(r)
-                    for outcome_date_str, rows in sorted(by_date.items()):
-                        outcome_d = date.fromisoformat(outcome_date_str)
-                        upsert_outcomes_daily(outcome_d, customer_id, rows, conn=conn)
-                        upsert_campaign_dims(outcome_d, customer_id, rows, conn=conn)
+                        for outcome_date_str, rows in sorted(by_date.items()):
+                            outcome_d = date.fromisoformat(outcome_date_str)
+                            upsert_campaign_dims(outcome_d, customer_id, rows, conn=conn)
+                        # Compute diffs day-by-day (needs prior day data)
                         if not no_diffs:
-                            prior_d = outcome_d - timedelta(days=1)
-                            prior_outcomes = get_outcomes_for_date(customer_id, prior_d, conn=conn)
-                            if prior_outcomes:
-                                outcome_diff_list = compute_outcome_diffs(rows, prior_outcomes)
-                                if outcome_diff_list:
-                                    insert_outcomes_diff_daily(outcome_d, customer_id, outcome_diff_list, conn=conn)
+                            for outcome_date_str, rows in sorted(by_date.items()):
+                                outcome_d = date.fromisoformat(outcome_date_str)
+                                prior_d = outcome_d - timedelta(days=1)
+                                prior_outcomes = get_outcomes_for_date(customer_id, prior_d, conn=conn)
+                                if prior_outcomes:
+                                    outcome_diff_list = compute_outcome_diffs(rows, prior_outcomes)
+                                    if outcome_diff_list:
+                                        insert_outcomes_diff_daily(outcome_d, customer_id, outcome_diff_list, conn=conn)
 
                     time.sleep(delay_seconds)
                     ad_group_daily = fetch_ad_groups_daily(
                         start_date=chunk_start_str, end_date=chunk_end_str, project=project, google_ads_filters=google_ads_filters
                     )
                     if ad_group_daily:
+                        # Add customer_id to all rows for batch upsert
+                        for r in ad_group_daily:
+                            r["customer_id"] = customer_id
+                        # Batch upsert all rows in chunks
+                        for i in range(0, len(ad_group_daily), AD_GROUP_UPSERT_BATCH_SIZE):
+                            chunk_rows = ad_group_daily[i : i + AD_GROUP_UPSERT_BATCH_SIZE]
+                            upsert_ad_group_outcomes_batch(chunk_rows, conn=conn)
+                        # Upsert ad group dims (grouped by date for dims)
                         by_date_ag: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
                         for r in ad_group_daily:
                             d = r.get("outcome_date")
@@ -379,9 +403,11 @@ def run_historical_sync(
                                 by_date_ag[d].append(r)
                         for outcome_date_str, rows in sorted(by_date_ag.items()):
                             outcome_d = date.fromisoformat(outcome_date_str)
-                            upsert_ad_group_outcomes_daily(outcome_d, customer_id, rows, conn=conn)
                             upsert_ad_group_dims(outcome_d, customer_id, rows, conn=conn)
-                            if not no_diffs:
+                        # Compute diffs day-by-day (needs prior day data)
+                        if not no_diffs:
+                            for outcome_date_str, rows in sorted(by_date_ag.items()):
+                                outcome_d = date.fromisoformat(outcome_date_str)
                                 prior_ag = get_ad_group_outcomes_for_date(customer_id, outcome_d - timedelta(days=1), conn=conn)
                                 if prior_ag:
                                     ag_norm_cur = [_ad_group_outcome_row_for_diff(r) for r in rows]
@@ -395,6 +421,14 @@ def run_historical_sync(
                         start_date=chunk_start_str, end_date=chunk_end_str, project=project, google_ads_filters=google_ads_filters
                     )
                     if keyword_daily:
+                        # Add customer_id to all rows for batch upsert
+                        for r in keyword_daily:
+                            r["customer_id"] = customer_id
+                        # Batch upsert all rows in chunks
+                        for i in range(0, len(keyword_daily), KEYWORD_UPSERT_BATCH_SIZE):
+                            chunk_rows = keyword_daily[i : i + KEYWORD_UPSERT_BATCH_SIZE]
+                            upsert_keyword_outcomes_batch(chunk_rows, conn=conn)
+                        # Upsert keyword dims (grouped by date for dims)
                         by_date_kw: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
                         for r in keyword_daily:
                             d = r.get("outcome_date")
@@ -402,9 +436,11 @@ def run_historical_sync(
                                 by_date_kw[d].append(r)
                         for outcome_date_str, rows in sorted(by_date_kw.items()):
                             outcome_d = date.fromisoformat(outcome_date_str)
-                            upsert_keyword_outcomes_daily(outcome_d, customer_id, rows, conn=conn)
                             upsert_keyword_dims(outcome_d, customer_id, rows, conn=conn)
-                            if not no_diffs:
+                        # Compute diffs day-by-day (needs prior day data)
+                        if not no_diffs:
+                            for outcome_date_str, rows in sorted(by_date_kw.items()):
+                                outcome_d = date.fromisoformat(outcome_date_str)
                                 prior_kw = get_keyword_outcomes_for_date(customer_id, outcome_d - timedelta(days=1), conn=conn)
                                 if prior_kw:
                                     kw_norm_cur = [_keyword_outcome_row_for_diff(r) for r in rows]

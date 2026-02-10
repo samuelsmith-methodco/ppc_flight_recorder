@@ -149,6 +149,64 @@ def upsert_outcomes_daily(outcome_date: date, customer_id: str, rows: List[Dict[
     return len(rows)
 
 
+def upsert_outcomes_batch(rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    """Batch upsert outcomes for multiple dates. Rows must have 'outcome_date' (YYYY-MM-DD string) and 'customer_id'."""
+    if not rows:
+        return 0
+    tbl = _table("ppc_campaign_outcomes_daily")
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            cost_micros = r.get("cost_micros")
+            if cost_micros is None and r.get("cost") is not None:
+                cost_micros = int(float(r["cost"]) * 1_000_000)
+            cost_micros = cost_micros or 0
+            prefix = f"r{i}_"
+            outcome_date_str = r.get("outcome_date")
+            if not outcome_date_str:
+                continue
+            params[prefix + "campaign_id"] = r.get("campaignId") or r.get("campaign_id")
+            params[prefix + "outcome_date"] = outcome_date_str
+            params[prefix + "customer_id"] = r.get("customer_id")
+            params[prefix + "campaign_name"] = _safe_str(r.get("campaignName") or r.get("campaign_name"), 512)
+            params[prefix + "impressions"] = int(r.get("impressions") or 0)
+            params[prefix + "clicks"] = int(r.get("clicks") or 0)
+            params[prefix + "cost_micros"] = cost_micros
+            params[prefix + "cost_amount"] = float(r.get("cost") or r.get("cost_amount") or 0)
+            params[prefix + "conversions"] = float(r.get("conversions") or 0)
+            params[prefix + "conversions_value"] = float(r.get("conversionValue") or r.get("conversions_value") or 0)
+            params[prefix + "ctr"] = r.get("ctr")
+            params[prefix + "cpc"] = r.get("cpc")
+            params[prefix + "cpa"] = r.get("cpa")
+            params[prefix + "roas"] = r.get("roas")
+            params[prefix + "cvr"] = r.get("cvr")
+            params[prefix + "search_impression_share_pct"] = r.get("impressionSharePct") or r.get("search_impression_share_pct")
+            params[prefix + "search_rank_lost_impression_share_pct"] = r.get("search_rank_lost_impression_share_pct")
+            values_parts.append(
+                f"(%(r{i}_campaign_id)s, %(r{i}_outcome_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_name)s, %(r{i}_impressions)s, %(r{i}_clicks)s, %(r{i}_cost_micros)s, %(r{i}_cost_amount)s, "
+                f"%(r{i}_conversions)s, %(r{i}_conversions_value)s, %(r{i}_ctr)s, %(r{i}_cpc)s, %(r{i}_cpa)s, %(r{i}_roas)s, %(r{i}_cvr)s, "
+                f"%(r{i}_search_impression_share_pct)s, %(r{i}_search_rank_lost_impression_share_pct)s)"
+            )
+        if not values_parts:
+            return 0
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(campaign_id, outcome_date, customer_id, campaign_name, impressions, clicks, cost_micros, cost_amount, conversions, conversions_value, ctr, cpc, cpa, roas, cvr, search_impression_share_pct, search_rank_lost_impression_share_pct)) AS source
+            ON target.campaign_id = source.campaign_id AND target.outcome_date = source.outcome_date AND target.customer_id = source.customer_id
+            WHEN MATCHED THEN UPDATE SET campaign_name = source.campaign_name, impressions = source.impressions, clicks = source.clicks, cost_micros = source.cost_micros, cost_amount = source.cost_amount, conversions = source.conversions, conversions_value = source.conversions_value, ctr = source.ctr, cpc = source.cpc, cpa = source.cpa, roas = source.roas, cvr = source.cvr, search_impression_share_pct = source.search_impression_share_pct, search_rank_lost_impression_share_pct = source.search_rank_lost_impression_share_pct
+            WHEN NOT MATCHED THEN INSERT (campaign_id, outcome_date, customer_id, campaign_name, impressions, clicks, cost_micros, cost_amount, conversions, conversions_value, ctr, cpc, cpa, roas, cvr, search_impression_share_pct, search_rank_lost_impression_share_pct) VALUES (source.campaign_id, source.outcome_date, source.customer_id, source.campaign_name, source.impressions, source.clicks, source.cost_micros, source.cost_amount, source.conversions, source.conversions_value, source.ctr, source.cpc, source.cpa, source.roas, source.cvr, source.search_impression_share_pct, source.search_rank_lost_impression_share_pct)
+            """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: batch upserted %s outcomes", len(rows))
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
 def get_outcomes_for_date(customer_id: str, outcome_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Load outcomes for a given customer_id/date (for outcome diff computation)."""
     tbl = _table("ppc_campaign_outcomes_daily")
@@ -373,6 +431,65 @@ def upsert_ad_group_outcomes_daily(outcome_date: date, customer_id: str, rows: L
     return len(rows)
 
 
+def upsert_ad_group_outcomes_batch(rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    """Batch upsert ad group outcomes for multiple dates. Rows must have 'outcome_date' (YYYY-MM-DD string) and 'customer_id'."""
+    if not rows:
+        return 0
+    tbl = _table("ppc_ad_group_outcomes_daily")
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            cost_micros = r.get("cost_micros")
+            if cost_micros is None and r.get("cost") is not None:
+                cost_micros = int(float(r["cost"]) * 1_000_000)
+            cost_micros = cost_micros or 0
+            prefix = f"r{i}_"
+            outcome_date_str = r.get("outcome_date")
+            if not outcome_date_str:
+                continue
+            params[prefix + "ad_group_id"] = r.get("ad_group_id") or r.get("adGroupId")
+            params[prefix + "campaign_id"] = r.get("campaign_id") or r.get("campaignId")
+            params[prefix + "outcome_date"] = outcome_date_str
+            params[prefix + "customer_id"] = r.get("customer_id")
+            params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name") or r.get("adGroupName"), 512)
+            params[prefix + "impressions"] = int(r.get("impressions") or 0)
+            params[prefix + "clicks"] = int(r.get("clicks") or 0)
+            params[prefix + "cost_micros"] = cost_micros
+            params[prefix + "cost_amount"] = float(r.get("cost") or r.get("cost_amount") or 0)
+            params[prefix + "conversions"] = float(r.get("conversions") or 0)
+            params[prefix + "conversions_value"] = float(r.get("conversionValue") or r.get("conversions_value") or 0)
+            params[prefix + "ctr"] = r.get("ctr")
+            params[prefix + "cpc"] = r.get("cpc")
+            params[prefix + "cpa"] = r.get("cpa")
+            params[prefix + "roas"] = r.get("roas")
+            params[prefix + "cvr"] = r.get("cvr")
+            params[prefix + "search_impression_share_pct"] = r.get("impressionSharePct") or r.get("search_impression_share_pct")
+            params[prefix + "search_rank_lost_impression_share_pct"] = r.get("search_rank_lost_impression_share_pct")
+            values_parts.append(
+                f"(%(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_outcome_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_ad_group_name)s, %(r{i}_impressions)s, %(r{i}_clicks)s, %(r{i}_cost_micros)s, %(r{i}_cost_amount)s, "
+                f"%(r{i}_conversions)s, %(r{i}_conversions_value)s, %(r{i}_ctr)s, %(r{i}_cpc)s, %(r{i}_cpa)s, %(r{i}_roas)s, %(r{i}_cvr)s, "
+                f"%(r{i}_search_impression_share_pct)s, %(r{i}_search_rank_lost_impression_share_pct)s)"
+            )
+        if not values_parts:
+            return 0
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(ad_group_id, campaign_id, outcome_date, customer_id, ad_group_name, impressions, clicks, cost_micros, cost_amount, conversions, conversions_value, ctr, cpc, cpa, roas, cvr, search_impression_share_pct, search_rank_lost_impression_share_pct)) AS source
+            ON target.ad_group_id = source.ad_group_id AND target.outcome_date = source.outcome_date AND target.customer_id = source.customer_id
+            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, ad_group_name = source.ad_group_name, impressions = source.impressions, clicks = source.clicks, cost_micros = source.cost_micros, cost_amount = source.cost_amount, conversions = source.conversions, conversions_value = source.conversions_value, ctr = source.ctr, cpc = source.cpc, cpa = source.cpa, roas = source.roas, cvr = source.cvr, search_impression_share_pct = source.search_impression_share_pct, search_rank_lost_impression_share_pct = source.search_rank_lost_impression_share_pct
+            WHEN NOT MATCHED THEN INSERT (ad_group_id, campaign_id, outcome_date, customer_id, ad_group_name, impressions, clicks, cost_micros, cost_amount, conversions, conversions_value, ctr, cpc, cpa, roas, cvr, search_impression_share_pct, search_rank_lost_impression_share_pct) VALUES (source.ad_group_id, source.campaign_id, source.outcome_date, source.customer_id, source.ad_group_name, source.impressions, source.clicks, source.cost_micros, source.cost_amount, source.conversions, source.conversions_value, source.ctr, source.cpc, source.cpa, source.roas, source.cvr, source.search_impression_share_pct, source.search_rank_lost_impression_share_pct)
+            """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: batch upserted %s ad_group_outcomes", len(rows))
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
 def get_ad_group_outcomes_for_date(customer_id: str, outcome_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
     tbl = _table("ppc_ad_group_outcomes_daily")
 
@@ -456,6 +573,67 @@ def upsert_keyword_outcomes_daily(outcome_date: date, customer_id: str, rows: Li
         execute(conn, merge_sql, params)
         conn.commit()
         logger.info("ppc_flight_recorder: upserted %s keyword_outcomes for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def upsert_keyword_outcomes_batch(rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    """Batch upsert keyword outcomes for multiple dates. Rows must have 'outcome_date' (YYYY-MM-DD string) and 'customer_id'."""
+    if not rows:
+        return 0
+    tbl = _table("ppc_keyword_outcomes_daily")
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            cost_micros = r.get("cost_micros")
+            if cost_micros is None and r.get("cost") is not None:
+                cost_micros = int(float(r["cost"]) * 1_000_000)
+            cost_micros = cost_micros or 0
+            prefix = f"r{i}_"
+            outcome_date_str = r.get("outcome_date")
+            if not outcome_date_str:
+                continue
+            params[prefix + "keyword_criterion_id"] = str(r.get("keyword_criterion_id") or r.get("keywordCriterionId") or r.get("criterion_id") or r.get("criterionId") or "")
+            params[prefix + "ad_group_id"] = r.get("ad_group_id") or r.get("adGroupId")
+            params[prefix + "campaign_id"] = r.get("campaign_id") or r.get("campaignId")
+            params[prefix + "outcome_date"] = outcome_date_str
+            params[prefix + "customer_id"] = r.get("customer_id")
+            params[prefix + "keyword_text"] = _safe_str(r.get("keyword_text") or r.get("keywordText"), 1024)
+            params[prefix + "match_type"] = _safe_str(r.get("match_type") or r.get("matchType"), 32)
+            params[prefix + "impressions"] = int(r.get("impressions") or 0)
+            params[prefix + "clicks"] = int(r.get("clicks") or 0)
+            params[prefix + "cost_micros"] = cost_micros
+            params[prefix + "cost_amount"] = float(r.get("cost") or r.get("cost_amount") or 0)
+            params[prefix + "conversions"] = float(r.get("conversions") or 0)
+            params[prefix + "conversions_value"] = float(r.get("conversionValue") or r.get("conversions_value") or 0)
+            params[prefix + "ctr"] = r.get("ctr")
+            params[prefix + "cpc"] = r.get("cpc")
+            params[prefix + "cpa"] = r.get("cpa")
+            params[prefix + "roas"] = r.get("roas")
+            params[prefix + "cvr"] = r.get("cvr")
+            params[prefix + "search_impression_share_pct"] = r.get("impressionSharePct") or r.get("search_impression_share_pct")
+            params[prefix + "search_rank_lost_impression_share_pct"] = r.get("search_rank_lost_impression_share_pct")
+            values_parts.append(
+                f"(%(r{i}_keyword_criterion_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_outcome_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_impressions)s, %(r{i}_clicks)s, %(r{i}_cost_micros)s, %(r{i}_cost_amount)s, "
+                f"%(r{i}_conversions)s, %(r{i}_conversions_value)s, %(r{i}_ctr)s, %(r{i}_cpc)s, %(r{i}_cpa)s, %(r{i}_roas)s, %(r{i}_cvr)s, "
+                f"%(r{i}_search_impression_share_pct)s, %(r{i}_search_rank_lost_impression_share_pct)s)"
+            )
+        if not values_parts:
+            return 0
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(keyword_criterion_id, ad_group_id, campaign_id, outcome_date, customer_id, keyword_text, match_type, impressions, clicks, cost_micros, cost_amount, conversions, conversions_value, ctr, cpc, cpa, roas, cvr, search_impression_share_pct, search_rank_lost_impression_share_pct)) AS source
+            ON target.keyword_criterion_id = source.keyword_criterion_id AND target.outcome_date = source.outcome_date AND target.customer_id = source.customer_id
+            WHEN MATCHED THEN UPDATE SET ad_group_id = source.ad_group_id, campaign_id = source.campaign_id, keyword_text = source.keyword_text, match_type = source.match_type, impressions = source.impressions, clicks = source.clicks, cost_micros = source.cost_micros, cost_amount = source.cost_amount, conversions = source.conversions, conversions_value = source.conversions_value, ctr = source.ctr, cpc = source.cpc, cpa = source.cpa, roas = source.roas, cvr = source.cvr, search_impression_share_pct = source.search_impression_share_pct, search_rank_lost_impression_share_pct = source.search_rank_lost_impression_share_pct
+            WHEN NOT MATCHED THEN INSERT (keyword_criterion_id, ad_group_id, campaign_id, outcome_date, customer_id, keyword_text, match_type, impressions, clicks, cost_micros, cost_amount, conversions, conversions_value, ctr, cpc, cpa, roas, cvr, search_impression_share_pct, search_rank_lost_impression_share_pct) VALUES (source.keyword_criterion_id, source.ad_group_id, source.campaign_id, source.outcome_date, source.customer_id, source.keyword_text, source.match_type, source.impressions, source.clicks, source.cost_micros, source.cost_amount, source.conversions, source.conversions_value, source.ctr, source.cpc, source.cpa, source.roas, source.cvr, source.search_impression_share_pct, source.search_rank_lost_impression_share_pct)
+            """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: batch upserted %s keyword_outcomes", len(rows))
 
     _run_with_conn(conn, do)
     return len(rows)
