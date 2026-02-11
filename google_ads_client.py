@@ -20,6 +20,14 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_str(v: Any, max_len: int = 65535) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v)
+    return s[:max_len] if len(s) > max_len else s
+
+
 _client: Optional[GoogleAdsClient] = None
 
 
@@ -131,8 +139,10 @@ def _bidding_strategy_display_name(
 def fetch_campaign_control_state(
     project: str,
     google_ads_filters: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """Fetch current campaign control state (settings only). One row per campaign."""
+) -> tuple:
+    """Fetch current campaign control state (settings only). One row per campaign.
+    Returns (control_state_rows, geo_targeting_rows) for ppc_campaign_control_state_daily and ppc_campaign_geo_targeting_daily.
+    """
     import json as _json
 
     client = get_client()
@@ -294,13 +304,10 @@ def fetch_campaign_control_state(
                     strategy_impression_share_location_by_resource = {}
                     strategy_impression_share_fraction_micros_by_resource = {}
 
-        geo_by_campaign: Dict[str, List[str]] = {}
-        geo_negative_by_campaign: Dict[str, List[str]] = {}
-        geo_radius_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
-        location_presence_interest_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
+        geo_location_rows: List[Dict[str, Any]] = []
+        geo_proximity_rows: List[Dict[str, Any]] = []
         ad_schedule_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
         audience_count_by_campaign: Dict[str, int] = {}
-        device_modifiers_by_campaign: Dict[str, Dict[str, float]] = {}
         account_timezone: Optional[str] = None
         try:
             tz_stream = ga_service.search_stream(
@@ -315,93 +322,111 @@ def fetch_campaign_control_state(
         except GoogleAdsException:
             pass
         try:
-            geo_stream = ga_service.search_stream(
+            # v23: Core location targeting – campaign + criterion + geo_target_type_setting (Presence vs Interest).
+            loc_stream = ga_service.search_stream(
                 customer_id=customer_id_clean,
-                query="SELECT campaign.id, campaign_criterion.criterion_id, campaign_criterion.negative, "
-                "campaign_criterion.location.geo_target_constant "
+                query="SELECT campaign.id, campaign.name, "
+                "campaign.geo_target_type_setting.positive_geo_target_type, campaign.geo_target_type_setting.negative_geo_target_type, "
+                "campaign_criterion.criterion_id, campaign_criterion.negative, campaign_criterion.location.geo_target_constant "
                 "FROM campaign_criterion WHERE campaign_criterion.type = 'LOCATION' AND campaign.status != 'REMOVED'",
             )
-            for gbatch in geo_stream:
+            for gbatch in loc_stream:
                 for grow in gbatch.results:
                     cid = str(grow.campaign.id)
-                    neg = getattr(grow.campaign_criterion, "negative", None)
+                    crit_id = getattr(grow.campaign_criterion, "criterion_id", None)
+                    if crit_id is None:
+                        continue
                     loc = getattr(grow.campaign_criterion, "location", None)
                     gt = getattr(loc, "geo_target_constant", None) if loc else None
-                    val = str(gt) if gt else (str(getattr(grow.campaign_criterion, "criterion_id", "")) if getattr(grow.campaign_criterion, "criterion_id", None) is not None else None)
-                    if val:
-                        if neg:
-                            geo_negative_by_campaign.setdefault(cid, []).append(val)
-                        else:
-                            geo_by_campaign.setdefault(cid, []).append(val)
+                    pos_type = getattr(grow.campaign, "geo_target_type_setting", None)
+                    pos_enum = getattr(pos_type, "positive_geo_target_type", None) if pos_type else None
+                    neg_enum = getattr(pos_type, "negative_geo_target_type", None) if pos_type else None
+                    pos_str = pos_enum.name if pos_enum and hasattr(pos_enum, "name") else (str(pos_enum) if pos_enum else None)
+                    neg_str = neg_enum.name if neg_enum and hasattr(neg_enum, "name") else (str(neg_enum) if neg_enum else None)
+                    geo_location_rows.append({
+                        "campaign_id": cid,
+                        "campaign_name": getattr(grow.campaign, "name", None) or "",
+                        "criterion_id": str(crit_id),
+                        "criterion_type": "LOCATION",
+                        "geo_target_constant": str(gt) if gt else None,
+                        "negative": bool(getattr(grow.campaign_criterion, "negative", False)),
+                        "positive_geo_target_type": pos_str,
+                        "negative_geo_target_type": neg_str,
+                    })
         except GoogleAdsException as e:
             logger.warning("Control state: location (geo) query failed: %s", e)
-        try:
-            loc_poi_stream = ga_service.search_stream(
-                customer_id=customer_id_clean,
-                query="SELECT campaign.id, campaign_criterion.location.geo_target_constant, "
-                "campaign_criterion.location.presence_or_interest "
-                "FROM campaign_criterion WHERE campaign_criterion.type = 'LOCATION' AND campaign_criterion.negative = FALSE AND campaign.status != 'REMOVED'",
-            )
-            for lbatch in loc_poi_stream:
-                for lrow in lbatch.results:
-                    cid = str(lrow.campaign.id)
-                    loc = getattr(lrow.campaign_criterion, "location", None)
-                    if not loc:
-                        continue
-                    gt = getattr(loc, "geo_target_constant", None)
-                    poi = getattr(loc, "presence_or_interest", None)
-                    poi_name = poi.name if poi and hasattr(poi, "name") else (str(poi) if poi else None)
-                    if gt or poi_name:
-                        location_presence_interest_by_campaign.setdefault(cid, []).append({
-                            "geo_target_constant": str(gt) if gt else None,
-                            "presence_or_interest": poi_name,
-                        })
-        except GoogleAdsException as e:
-            logger.debug("Control state: location presence_or_interest query not available or failed: %s", e)
-        try:
-            prox_stream = ga_service.search_stream(
-                customer_id=customer_id_clean,
-                query="SELECT campaign.id, campaign_criterion.proximity.radius, campaign_criterion.proximity.radius_units "
-                "FROM campaign_criterion WHERE campaign_criterion.type = 'PROXIMITY' AND campaign.status != 'REMOVED'",
-            )
-            for pbatch in prox_stream:
+        def _consume_proximity_stream(stream, rows_out):
+            for pbatch in stream:
                 for prow in pbatch.results:
-                    cid = str(prow.campaign.id)
                     prox = getattr(prow.campaign_criterion, "proximity", None)
-                    if prox:
-                        geocode = getattr(prox, "geocode", None) or getattr(prox, "geocode_center", None)
-                        center = getattr(geocode, "center", None) if geocode else None
-                        entry = {
-                            "radius": getattr(prox, "radius", None),
-                            "radius_units": getattr(prox, "radius_units", None) and getattr(prox.radius_units, "name", None),
-                            "lat_micro": getattr(center, "latitude_micro_degrees", None) or getattr(center, "latitude_in_micro_degrees", None) if center else None,
-                            "long_micro": getattr(center, "longitude_micro_degrees", None) or getattr(center, "longitude_in_micro_degrees", None) if center else None,
-                        }
-                        geo_radius_by_campaign.setdefault(cid, []).append(entry)
+                    if not prox:
+                        continue
+                    cid = str(prow.campaign.id)
+                    crit_id = getattr(prow.campaign_criterion, "criterion_id", None)
+                    if crit_id is None:
+                        continue
+                    ru = getattr(prox, "radius_units", None)
+                    ru_str = getattr(ru, "name", None) if ru is not None else None
+                    if ru_str is None and ru is not None:
+                        ru_str = str(ru)
+                    addr = getattr(prox, "address", None)
+                    street = getattr(addr, "street_address", None) if addr else None
+                    city = getattr(addr, "city_name", None) if addr else None
+                    gp = getattr(prox, "geo_point", None)
+                    lat_micro = None
+                    lng_micro = None
+                    if gp is not None:
+                        lat_micro = getattr(gp, "latitude_in_micro_degrees", None) or getattr(gp, "latitude_micros", None)
+                        lng_micro = getattr(gp, "longitude_in_micro_degrees", None) or getattr(gp, "longitude_micros", None)
+                        if lat_micro is not None:
+                            lat_micro = int(lat_micro)
+                        if lng_micro is not None:
+                            lng_micro = int(lng_micro)
+                    rows_out.append({
+                        "campaign_id": cid,
+                        "campaign_name": getattr(prow.campaign, "name", None) or "",
+                        "criterion_id": str(crit_id),
+                        "criterion_type": "PROXIMITY",
+                        "radius": getattr(prox, "radius", None),
+                        "radius_units": ru_str,
+                        "proximity_street_address": str(street)[:1024] if street else None,
+                        "proximity_city_name": str(city)[:256] if city else None,
+                        "latitude_micro": lat_micro,
+                        "longitude_micro": lng_micro,
+                    })
+
+        try:
+            # v23: Proximity – radius, radius_units, geo_point (lat/long in micro-degrees); address when selectable. Fallbacks if fields not available.
+            prox_query_full = (
+                "SELECT campaign.id, campaign.name, campaign_criterion.criterion_id, "
+                "campaign_criterion.proximity.radius, campaign_criterion.proximity.radius_units, "
+                "campaign_criterion.proximity.geo_point.latitude_in_micro_degrees, campaign_criterion.proximity.geo_point.longitude_in_micro_degrees, "
+                "campaign_criterion.proximity.address.street_address, campaign_criterion.proximity.address.city_name "
+                "FROM campaign_criterion WHERE campaign_criterion.type = 'PROXIMITY' AND campaign.status != 'REMOVED'"
+            )
+            prox_query_no_addr = (
+                "SELECT campaign.id, campaign.name, campaign_criterion.criterion_id, "
+                "campaign_criterion.proximity.radius, campaign_criterion.proximity.radius_units, "
+                "campaign_criterion.proximity.geo_point.latitude_in_micro_degrees, campaign_criterion.proximity.geo_point.longitude_in_micro_degrees "
+                "FROM campaign_criterion WHERE campaign_criterion.type = 'PROXIMITY' AND campaign.status != 'REMOVED'"
+            )
+            prox_query_min = (
+                "SELECT campaign.id, campaign.name, campaign_criterion.criterion_id, "
+                "campaign_criterion.proximity.radius, campaign_criterion.proximity.radius_units "
+                "FROM campaign_criterion WHERE campaign_criterion.type = 'PROXIMITY' AND campaign.status != 'REMOVED'"
+            )
+            try:
+                prox_stream = ga_service.search_stream(customer_id=customer_id_clean, query=prox_query_full)
+                _consume_proximity_stream(prox_stream, geo_proximity_rows)
+            except GoogleAdsException:
+                try:
+                    prox_stream = ga_service.search_stream(customer_id=customer_id_clean, query=prox_query_no_addr)
+                    _consume_proximity_stream(prox_stream, geo_proximity_rows)
+                except GoogleAdsException:
+                    prox_stream = ga_service.search_stream(customer_id=customer_id_clean, query=prox_query_min)
+                    _consume_proximity_stream(prox_stream, geo_proximity_rows)
         except GoogleAdsException as e:
             logger.warning("Control state: proximity (geo radius) query failed: %s", e)
-        try:
-            dev_stream = ga_service.search_stream(
-                customer_id=customer_id_clean,
-                query="SELECT campaign.id, ad_group_criterion.criterion_id, ad_group_criterion.bid_modifier "
-                "FROM ad_group_criterion "
-                "WHERE ad_group_criterion.type = 'DEVICE' AND campaign.status != 'REMOVED' AND ad_group.status != 'REMOVED'",
-            )
-            for dbatch in dev_stream:
-                for drow in dbatch.results:
-                    cid = str(drow.campaign.id)
-                    dev_type = getattr(getattr(drow.ad_group_criterion, "device", None), "type", None)
-                    dev_name = dev_type.name if dev_type and hasattr(dev_type, "name") else str(dev_type) if dev_type else None
-                    if dev_name is None:
-                        dev_name = "device_" + str(getattr(drow.ad_group_criterion, "criterion_id", ""))
-                    mod = getattr(drow.ad_group_criterion, "bid_modifier", None)
-                    mod_val = float(mod) if mod is not None else None
-                    if cid not in device_modifiers_by_campaign:
-                        device_modifiers_by_campaign[cid] = {}
-                    if mod_val is not None and dev_name:
-                        device_modifiers_by_campaign[cid][dev_name.lower()] = mod_val
-        except GoogleAdsException as e:
-            logger.warning("Control state: device modifiers query failed: %s", e)
         try:
             sched_stream = ga_service.search_stream(
                 customer_id=customer_id_clean,
@@ -531,19 +556,15 @@ def fetch_campaign_control_state(
                 target_search_network = _bool_val(getattr(ns, "target_search_network", None)) if ns else None
                 target_content_network = _bool_val(getattr(ns, "target_content_network", None)) if ns else None
                 target_partner_search_network = _bool_val(getattr(ns, "target_partner_search_network", None)) if ns else None
-                geo_ids = geo_by_campaign.get(campaign_id)
-                geo_target_ids = ",".join(geo_ids) if geo_ids else None
-                geo_neg_ids = geo_negative_by_campaign.get(campaign_id)
-                geo_negative_ids = ",".join(geo_neg_ids) if geo_neg_ids else None
-                geo_radius_list = geo_radius_by_campaign.get(campaign_id)
-                geo_radius_json = _json.dumps(geo_radius_list) if geo_radius_list else None
+                loc_includes = [r["geo_target_constant"] for r in geo_location_rows if r["campaign_id"] == campaign_id and not r.get("negative") and r.get("geo_target_constant")]
+                loc_excludes = [r["geo_target_constant"] for r in geo_location_rows if r["campaign_id"] == campaign_id and r.get("negative") and r.get("geo_target_constant")]
+                geo_target_ids = ",".join(loc_includes) if loc_includes else None
+                geo_negative_ids = ",".join(loc_excludes) if loc_excludes else None
+                prox_list = [{"radius": r.get("radius"), "radius_units": r.get("radius_units")} for r in geo_proximity_rows if r["campaign_id"] == campaign_id]
+                geo_radius_json = _json.dumps(prox_list) if prox_list else None
                 sched_list = ad_schedule_by_campaign.get(campaign_id)
                 ad_schedule_json = _json.dumps(sched_list) if sched_list else None
                 audience_target_count = audience_count_by_campaign.get(campaign_id)
-                dev_mods = device_modifiers_by_campaign.get(campaign_id)
-                device_modifiers_json = _json.dumps(dev_mods) if dev_mods else None
-                loc_poi_list = location_presence_interest_by_campaign.get(campaign_id)
-                location_presence_interest_json = (_json.dumps(loc_poi_list)[:4096] if loc_poi_list else None)
                 def _date_str(ymd: Any) -> Optional[str]:
                     if ymd is None:
                         return None
@@ -579,9 +600,6 @@ def fetch_campaign_control_state(
                     if t in aud_types:
                         active_bid_adj_parts.append(_AUDIENCE_TYPE_LABELS.get(t, t.replace("_", " ").title()))
                 active_bid_adj = " And ".join(active_bid_adj_parts) if active_bid_adj_parts else None
-                devices_str = None
-                if dev_mods:
-                    devices_str = ", ".join(k for k in (dev_mods or {}).keys())[:512] if dev_mods else None
                 rows_out.append({
                     "campaign_id": campaign_id, "campaign_name": campaign_name, "status": status,
                     "advertising_channel_type": channel_type, "advertising_channel_sub_type": sub_type,
@@ -596,9 +614,7 @@ def fetch_campaign_control_state(
                     "geo_target_ids": geo_target_ids[:4096] if geo_target_ids and len(geo_target_ids) > 4096 else geo_target_ids,
                     "geo_negative_ids": geo_negative_ids[:4096] if geo_negative_ids and len(geo_negative_ids) > 4096 else geo_negative_ids,
                     "geo_radius_json": geo_radius_json[:65535] if geo_radius_json and len(geo_radius_json) > 65535 else geo_radius_json,
-                    "location_presence_interest_json": location_presence_interest_json,
                     "account_timezone": account_timezone,
-                    "device_modifiers_json": device_modifiers_json[:4096] if device_modifiers_json and len(device_modifiers_json) > 4096 else device_modifiers_json,
                     "network_settings_target_google_search": target_google_search,
                     "network_settings_target_search_network": target_search_network,
                     "network_settings_target_content_network": target_content_network,
@@ -611,13 +627,106 @@ def fetch_campaign_control_state(
                     "campaign_end_date": campaign_end_date,
                     "location": location_summary,
                     "active_bid_adj": (active_bid_adj[:256] if active_bid_adj and len(active_bid_adj) > 256 else active_bid_adj) or None,
-                    "devices": devices_str,
                 })
-        logger.info("fetch_campaign_control_state: %s campaigns for project %s", len(rows_out), project)
+        # Fetch reach + geo name for LOCATION via GeoTargetConstantService.SuggestGeoTargetConstants.
+        reach_by_constant: Dict[str, Optional[int]] = {}
+        name_by_constant: Dict[str, Optional[str]] = {}
+        unique_gt = {r["geo_target_constant"] for r in geo_location_rows if r.get("geo_target_constant")}
+        if unique_gt:
+            try:
+                geo_constant_service = client.get_service("GeoTargetConstantService")
+                request = client.get_type("SuggestGeoTargetConstantsRequest")
+                request.locale = "en"
+                request.geo_targets.geo_target_constants.extend(sorted(unique_gt))
+                response = geo_constant_service.suggest_geo_target_constants(request=request)
+                for suggestion in getattr(response, "geo_target_constant_suggestions", []) or []:
+                    gtc = getattr(suggestion, "geo_target_constant", None)
+                    resource_name = None
+                    if gtc is not None:
+                        resource_name = getattr(gtc, "resource_name", None) or (str(gtc) if gtc else None)
+                    if resource_name is None:
+                        resource_name = getattr(suggestion, "resource_name", None)
+                    if resource_name is not None:
+                        rn = str(resource_name)
+                        reach = getattr(suggestion, "reach", None)
+                        reach_by_constant[rn] = int(reach) if reach is not None else None
+                        name_val = getattr(suggestion, "search_term", None) or getattr(gtc, "name", None) if gtc else None
+                        name_by_constant[rn] = _safe_str(name_val, 512) if name_val else None
+            except GoogleAdsException as e:
+                logger.warning("SuggestGeoTargetConstants (reach) failed: %s", e)
+            except Exception as e:
+                logger.warning("SuggestGeoTargetConstants (reach) failed: %s", e)
+
+        for r in rows_out:
+            ids_str = r.get("geo_target_ids")
+            if ids_str:
+                names = [name_by_constant.get(i.strip(), i.strip()) for i in ids_str.split(",") if i.strip()]
+                r["geo_target_names"] = (",".join(n for n in names if n))[:4096] if names else None
+            else:
+                r["geo_target_names"] = None
+            neg_str = r.get("geo_negative_ids")
+            if neg_str:
+                names = [name_by_constant.get(i.strip(), i.strip()) for i in neg_str.split(",") if i.strip()]
+                r["geo_negative_names"] = (",".join(n for n in names if n))[:4096] if names else None
+            else:
+                r["geo_negative_names"] = None
+
+        geo_targeting_rows: List[Dict[str, Any]] = []
+        ord_by_campaign_type: Dict[tuple, int] = {}
+        for r in geo_location_rows:
+            cid = r["campaign_id"]
+            k = (cid, "LOCATION")
+            ord_by_campaign_type[k] = ord_by_campaign_type.get(k, 0) + 1
+            gt = r.get("geo_target_constant")
+            geo_targeting_rows.append({
+                "campaign_id": cid,
+                "campaign_name": (r.get("campaign_name") or "")[:512],
+                "criterion_id": r["criterion_id"],
+                "criterion_type": "LOCATION",
+                "ordinal": ord_by_campaign_type[k],
+                "geo_target_constant": _safe_str(gt, 256) if gt else None,
+                "geo_name": name_by_constant.get(gt) if gt else None,
+                "negative": r.get("negative"),
+                "positive_geo_target_type": _safe_str(r.get("positive_geo_target_type"), 64),
+                "negative_geo_target_type": _safe_str(r.get("negative_geo_target_type"), 64),
+                "proximity_street_address": None,
+                "proximity_city_name": None,
+                "radius": None,
+                "radius_units": None,
+                "latitude_micro": None,
+                "longitude_micro": None,
+                "estimated_reach": reach_by_constant.get(gt) if gt else None,
+            })
+        for r in geo_proximity_rows:
+            cid = r["campaign_id"]
+            k = (cid, "PROXIMITY")
+            ord_by_campaign_type[k] = ord_by_campaign_type.get(k, 0) + 1
+            radius_val = r.get("radius")
+            ru = r.get("radius_units")
+            geo_targeting_rows.append({
+                "campaign_id": cid,
+                "campaign_name": (r.get("campaign_name") or "")[:512],
+                "criterion_id": r["criterion_id"],
+                "criterion_type": "PROXIMITY",
+                "ordinal": ord_by_campaign_type[k],
+                "geo_target_constant": None,
+                "geo_name": None,
+                "negative": None,
+                "positive_geo_target_type": None,
+                "negative_geo_target_type": None,
+                "proximity_street_address": _safe_str(r.get("proximity_street_address"), 1024),
+                "proximity_city_name": _safe_str(r.get("proximity_city_name"), 256),
+                "radius": float(radius_val) if radius_val is not None else None,
+                "radius_units": (ru[:16] if ru and len(ru) > 16 else ru) if ru else None,
+                "latitude_micro": r.get("latitude_micro"),
+                "longitude_micro": r.get("longitude_micro"),
+                "estimated_reach": None,
+            })
+        logger.info("fetch_campaign_control_state: %s campaigns, %s geo targeting rows for project %s", len(rows_out), len(geo_targeting_rows), project)
     except GoogleAdsException as ex:
         logger.error("Google Ads API error: %s", ex)
-        return []
-    return rows_out
+        return ([], [])
+    return (rows_out, geo_targeting_rows)
 
 
 def fetch_campaigns(

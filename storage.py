@@ -68,10 +68,10 @@ def upsert_control_state_daily(
             params[prefix + "target_impression_share_location_fraction_micros"] = r.get("target_impression_share_location_fraction_micros")
             params[prefix + "geo_target_ids"] = _safe_str(r.get("geo_target_ids"), 4096)
             params[prefix + "geo_negative_ids"] = _safe_str(r.get("geo_negative_ids"), 4096)
+            params[prefix + "geo_target_names"] = _safe_str(r.get("geo_target_names"), 4096)
+            params[prefix + "geo_negative_names"] = _safe_str(r.get("geo_negative_names"), 4096)
             params[prefix + "geo_radius_json"] = _safe_str(r.get("geo_radius_json"), 65535)
-            params[prefix + "location_presence_interest_json"] = _safe_str(r.get("location_presence_interest_json"), 4096)
             params[prefix + "account_timezone"] = _safe_str(r.get("account_timezone"), 64)
-            params[prefix + "device_modifiers_json"] = _safe_str(r.get("device_modifiers_json"), 4096)
             params[prefix + "network_settings_target_google_search"] = r.get("network_settings_target_google_search")
             params[prefix + "network_settings_target_search_network"] = r.get("network_settings_target_search_network")
             params[prefix + "network_settings_target_content_network"] = r.get("network_settings_target_content_network")
@@ -84,21 +84,20 @@ def upsert_control_state_daily(
             params[prefix + "campaign_end_date"] = r.get("campaign_end_date")
             params[prefix + "location"] = _safe_str(r.get("location"), 4096)
             params[prefix + "active_bid_adj"] = _safe_str(r.get("active_bid_adj"), 256)
-            params[prefix + "devices"] = _safe_str(r.get("devices"), 512)
             values_parts.append(
                 f"(%(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_name)s, %(r{i}_status)s, "
                 f"%(r{i}_advertising_channel_type)s, %(r{i}_advertising_channel_sub_type)s, %(r{i}_daily_budget_micros)s, %(r{i}_daily_budget_amount)s, "
                 f"%(r{i}_budget_delivery_method)s, %(r{i}_bidding_strategy_type)s, %(r{i}_target_cpa_micros)s, %(r{i}_target_cpa_amount)s, %(r{i}_target_roas)s, "
                 f"%(r{i}_target_impression_share_location)s, %(r{i}_target_impression_share_location_fraction_micros)s, "
-                f"%(r{i}_geo_target_ids)s, %(r{i}_geo_negative_ids)s, %(r{i}_geo_radius_json)s, %(r{i}_location_presence_interest_json)s, %(r{i}_account_timezone)s, %(r{i}_device_modifiers_json)s, "
+                f"%(r{i}_geo_target_ids)s, %(r{i}_geo_negative_ids)s, %(r{i}_geo_target_names)s, %(r{i}_geo_negative_names)s, %(r{i}_geo_radius_json)s, %(r{i}_account_timezone)s, "
                 f"%(r{i}_network_settings_target_google_search)s, %(r{i}_network_settings_target_search_network)s, "
                 f"%(r{i}_network_settings_target_content_network)s, %(r{i}_network_settings_target_partner_search_network)s, "
                 f"%(r{i}_ad_schedule_json)s, %(r{i}_audience_target_count)s, "
                 f"%(r{i}_campaign_type)s, %(r{i}_networks)s, %(r{i}_campaign_start_date)s::DATE, %(r{i}_campaign_end_date)s::DATE, "
-                f"%(r{i}_location)s, %(r{i}_active_bid_adj)s, %(r{i}_devices)s)"
+                f"%(r{i}_location)s, %(r{i}_active_bid_adj)s)"
             )
         values_sql = ",\n                ".join(values_parts)
-        v_cols = "campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_radius_json, location_presence_interest_json, account_timezone, device_modifiers_json, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj, devices"
+        v_cols = "campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_target_names, geo_negative_names, geo_radius_json, account_timezone, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj"
         merge_sql = f"""
             MERGE INTO {tbl} AS target
             USING (
@@ -115,16 +114,16 @@ def upsert_control_state_daily(
                 budget_delivery_method = source.budget_delivery_method, bidding_strategy_type = source.bidding_strategy_type,
                 target_cpa_micros = source.target_cpa_micros, target_cpa_amount = source.target_cpa_amount, target_roas = source.target_roas,
                 target_impression_share_location = source.target_impression_share_location, target_impression_share_location_fraction_micros = source.target_impression_share_location_fraction_micros,
-                geo_target_ids = source.geo_target_ids, geo_negative_ids = source.geo_negative_ids, geo_radius_json = source.geo_radius_json, location_presence_interest_json = source.location_presence_interest_json, account_timezone = source.account_timezone, device_modifiers_json = source.device_modifiers_json, network_settings_target_google_search = source.network_settings_target_google_search,
+                geo_target_ids = source.geo_target_ids, geo_negative_ids = source.geo_negative_ids, geo_target_names = source.geo_target_names, geo_negative_names = source.geo_negative_names, geo_radius_json = source.geo_radius_json, account_timezone = source.account_timezone, network_settings_target_google_search = source.network_settings_target_google_search,
                 network_settings_target_search_network = source.network_settings_target_search_network,
                 network_settings_target_content_network = source.network_settings_target_content_network,
                 network_settings_target_partner_search_network = source.network_settings_target_partner_search_network,
                 ad_schedule_json = source.ad_schedule_json, audience_target_count = source.audience_target_count,
                 campaign_type = source.campaign_type, networks = source.networks,
                 campaign_start_date = source.campaign_start_date, campaign_end_date = source.campaign_end_date,
-                location = source.location, active_bid_adj = source.active_bid_adj, devices = source.devices
-            WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_radius_json, location_presence_interest_json, account_timezone, device_modifiers_json, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj, devices)
-            VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.campaign_name, source.status, source.advertising_channel_type, source.advertising_channel_sub_type, source.daily_budget_micros, source.daily_budget_amount, source.budget_delivery_method, source.bidding_strategy_type, source.target_cpa_micros, source.target_cpa_amount, source.target_roas, source.target_impression_share_location, source.target_impression_share_location_fraction_micros, source.geo_target_ids, source.geo_negative_ids, source.geo_radius_json, source.location_presence_interest_json, source.account_timezone, source.device_modifiers_json, source.network_settings_target_google_search, source.network_settings_target_search_network, source.network_settings_target_content_network, source.network_settings_target_partner_search_network, source.ad_schedule_json, source.audience_target_count, source.campaign_type, source.networks, source.campaign_start_date, source.campaign_end_date, source.location, source.active_bid_adj, source.devices)
+                location = source.location, active_bid_adj = source.active_bid_adj
+            WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_target_names, geo_negative_names, geo_radius_json, account_timezone, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj)
+            VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.campaign_name, source.status, source.advertising_channel_type, source.advertising_channel_sub_type, source.daily_budget_micros, source.daily_budget_amount, source.budget_delivery_method, source.bidding_strategy_type, source.target_cpa_micros, source.target_cpa_amount, source.target_roas, source.target_impression_share_location, source.target_impression_share_location_fraction_micros, source.geo_target_ids, source.geo_negative_ids, source.geo_target_names, source.geo_negative_names, source.geo_radius_json, source.account_timezone, source.network_settings_target_google_search, source.network_settings_target_search_network, source.network_settings_target_content_network, source.network_settings_target_partner_search_network, source.ad_schedule_json, source.audience_target_count, source.campaign_type, source.networks, source.campaign_start_date, source.campaign_end_date, source.location, source.active_bid_adj)
             """
         execute(conn, merge_sql, params)
         conn.commit()
@@ -280,12 +279,9 @@ def insert_outcomes_diff_daily(outcome_date: date, customer_id: str, diff_rows: 
 
 def get_control_state_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
     tbl = _table("ppc_campaign_control_state_daily")
-
-    def do(conn):
-        q = f"SELECT campaign_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_radius_json, location_presence_interest_json, account_timezone, device_modifiers_json, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj, devices FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
-        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
-
-    df = _run_with_conn(conn, do)
+    params = {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()}
+    q = f"SELECT campaign_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_target_names, geo_negative_names, geo_radius_json, account_timezone, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+    df = _run_with_conn(conn, lambda c: execute_query(c, q, params))
     if df.empty:
         return []
     df.columns = [c.lower() for c in df.columns]
@@ -305,6 +301,112 @@ def insert_control_diff_daily(snapshot_date: date, customer_id: str, diff_rows: 
         execute_many(conn, insert_sql, params_list)
         conn.commit()
         logger.info("ppc_flight_recorder: inserted %s control_state diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(diff_rows)
+
+
+def upsert_geo_targeting_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    """Replace all geo targeting rows for (snapshot_date, customer_id) then insert the given rows. When rows is empty, only the DELETE runs (clears snapshot for that date)."""
+    tbl = _table("ppc_campaign_geo_targeting_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        if not rows:
+            conn.commit()
+            return
+        insert_sql = (
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, campaign_name, criterion_id, criterion_type, ordinal, "
+            "geo_target_constant, geo_name, negative, positive_geo_target_type, negative_geo_target_type, "
+            "proximity_street_address, proximity_city_name, radius, radius_units, latitude_micro, longitude_micro, estimated_reach) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(campaign_name)s, %(criterion_id)s, %(criterion_type)s, %(ordinal)s, "
+            "%(geo_target_constant)s, %(geo_name)s, %(negative)s, %(positive_geo_target_type)s, %(negative_geo_target_type)s, "
+            "%(proximity_street_address)s, %(proximity_city_name)s, %(radius)s, %(radius_units)s, %(latitude_micro)s, %(longitude_micro)s, %(estimated_reach)s)"
+        )
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r.get("campaign_id"),
+                "campaign_name": _safe_str(r.get("campaign_name"), 512),
+                "criterion_id": _safe_str(r.get("criterion_id"), 64),
+                "criterion_type": _safe_str(r.get("criterion_type"), 32),
+                "ordinal": r.get("ordinal"),
+                "geo_target_constant": _safe_str(r.get("geo_target_constant"), 256),
+                "geo_name": _safe_str(r.get("geo_name"), 512),
+                "negative": r.get("negative"),
+                "positive_geo_target_type": _safe_str(r.get("positive_geo_target_type"), 64),
+                "negative_geo_target_type": _safe_str(r.get("negative_geo_target_type"), 64),
+                "proximity_street_address": _safe_str(r.get("proximity_street_address"), 1024),
+                "proximity_city_name": _safe_str(r.get("proximity_city_name"), 256),
+                "radius": r.get("radius"),
+                "radius_units": _safe_str(r.get("radius_units"), 16),
+                "latitude_micro": r.get("latitude_micro"),
+                "longitude_micro": r.get("longitude_micro"),
+                "estimated_reach": r.get("estimated_reach"),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s geo_targeting rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_geo_targeting_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """Return geo targeting rows for (customer_id, snapshot_date) from ppc_campaign_geo_targeting_daily."""
+    tbl = _table("ppc_campaign_geo_targeting_daily")
+    params = {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()}
+    q = (
+        f"SELECT snapshot_date, customer_id, campaign_id, campaign_name, criterion_id, criterion_type, ordinal, "
+        f"geo_target_constant, geo_name, negative, positive_geo_target_type, negative_geo_target_type, "
+        f"proximity_street_address, proximity_city_name, radius, radius_units, latitude_micro, longitude_micro, estimated_reach "
+        f"FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s::DATE ORDER BY campaign_id, criterion_type, ordinal"
+    )
+    df = _run_with_conn(conn, lambda c: execute_query(c, q, params))
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_geo_targeting_diff_daily(snapshot_date: date, customer_id: str, diff_rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    """Insert day-over-day geo targeting changes into ppc_campaign_geo_targeting_diff_daily. Replaces all rows for (snapshot_date, customer_id)."""
+    if not diff_rows:
+        return 0
+    tbl = _table("ppc_campaign_geo_targeting_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = (
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, criterion_type, criterion_id, changed_metric_name, old_value, new_value) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(criterion_type)s, %(criterion_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
+        )
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r["campaign_id"],
+                "criterion_type": _safe_str(r.get("criterion_type"), 32),
+                "criterion_id": _safe_str(r.get("criterion_id"), 64),
+                "changed_metric_name": _safe_str(r["changed_metric_name"], 128),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in diff_rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s geo_targeting diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
 
     _run_with_conn(conn, do)
     return len(diff_rows)

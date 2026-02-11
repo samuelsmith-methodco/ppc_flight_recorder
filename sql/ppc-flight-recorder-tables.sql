@@ -2,6 +2,9 @@
 -- PPC Flight Recorder Tables – run in your Snowflake database/schema
 -- =============================================================================
 -- Migration: ppc_campaign_control_diff_daily is now created (day-over-day control state changes).
+-- Migration: Geo names for control state (run if ppc_campaign_control_state_daily exists without them):
+--   ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS geo_target_names VARCHAR(4096);
+--   ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS geo_negative_names VARCHAR(4096);
 -- Migration: TIER 4 policy_summary for ppc_ad_creative_snapshot_daily (run if table exists):
 --   ALTER TABLE ppc_ad_creative_snapshot_daily ADD COLUMN policy_summary_json VARCHAR(65535);
 -- Migration: status column for ppc_ad_creative_snapshot_daily (run if table exists):
@@ -54,10 +57,10 @@
 --   target_impression_share_location_fraction_micros: For TARGET_IMPRESSION_SHARE; NULL otherwise.
 --   geo_target_ids: Comma-separated geo target constant resource names for included locations (campaign_criterion type LOCATION, negative=false).
 --   geo_negative_ids: Comma-separated geo target IDs for excluded locations (negative=true).
+--   geo_target_names: Comma-separated human-readable names for geo_target_ids (from GeoTargetConstantService).
+--   geo_negative_names: Comma-separated human-readable names for geo_negative_ids (from GeoTargetConstantService).
 --   geo_radius_json: JSON array of proximity targets (radius, units, lat/long). Empty if no radius targeting.
---   location_presence_interest_json: Reserved for presence vs interest; currently NULL.
 --   account_timezone: Customer account timezone (e.g. America/New_York). Used for ad schedule interpretation.
---   device_modifiers_json: JSON of device bid modifiers, e.g. {"mobile":1.2,"desktop":0.9}. From ad_group_criterion type DEVICE. NULL if none.
 --   network_settings_*: Which networks the campaign targets (Google Search, Search Partners, Display, etc.).
 --   ad_schedule_json: JSON array of {day_of_week, start_hour, start_minute, end_hour, end_minute, bid_modifier}. Empty if no schedule.
 --   audience_target_count: Count of audience criteria (USER_LIST, USER_INTEREST, etc.) on the campaign.
@@ -66,7 +69,6 @@
 --   campaign_start_date, campaign_end_date: Campaign date range from Google Ads.
 --   location: Summary of location targeting (geo_target_ids or short description).
 --   active_bid_adj: Audience segments used for bid adjustment (e.g. None or "User interest And List").
---   devices: Summary of device targeting (e.g. "mobile, desktop, tablet" or modifier summary).
 CREATE TABLE IF NOT EXISTS ppc_campaign_control_state_daily (
     campaign_id VARCHAR(64) NOT NULL,
     snapshot_date DATE NOT NULL,
@@ -86,10 +88,10 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_control_state_daily (
     target_impression_share_location_fraction_micros NUMBER(20, 0),
     geo_target_ids VARCHAR(4096),
     geo_negative_ids VARCHAR(4096),
+    geo_target_names VARCHAR(4096),
+    geo_negative_names VARCHAR(4096),
     geo_radius_json VARCHAR(65535),
-    location_presence_interest_json VARCHAR(4096),
     account_timezone VARCHAR(64),
-    device_modifiers_json VARCHAR(4096),
     network_settings_target_google_search BOOLEAN,
     network_settings_target_search_network BOOLEAN,
     network_settings_target_content_network BOOLEAN,
@@ -102,19 +104,23 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_control_state_daily (
     campaign_end_date DATE,
     location VARCHAR(4096),
     active_bid_adj VARCHAR(256),
-    devices VARCHAR(512),
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (campaign_id, snapshot_date, customer_id)
 );
 
--- Add new columns to existing tables (run once per env; Snowflake: ADD COLUMN IF NOT EXISTS supported in recent versions)
+-- Add/remove columns on existing tables (run once per env; Snowflake: ADD/DROP COLUMN IF EXISTS supported in recent versions)
+-- Remove location_effective_reach_estimate (moved to ppc_campaign_geo_targeting_daily.effective_reach_estimate):
+-- ALTER TABLE ppc_campaign_control_state_daily DROP COLUMN IF EXISTS location_effective_reach_estimate;
+-- Remove device_modifiers_json, devices, location_presence_interest_json (no longer stored in control state):
+-- ALTER TABLE ppc_campaign_control_state_daily DROP COLUMN IF EXISTS device_modifiers_json;
+-- ALTER TABLE ppc_campaign_control_state_daily DROP COLUMN IF EXISTS devices;
+-- ALTER TABLE ppc_campaign_control_state_daily DROP COLUMN IF EXISTS location_presence_interest_json;
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS campaign_type VARCHAR(128);
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS networks VARCHAR(256);
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS campaign_start_date DATE;
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS campaign_end_date DATE;
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS location VARCHAR(4096);
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS active_bid_adj VARCHAR(256);
--- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS devices VARCHAR(512);
 
 -- ppc_campaign_control_diff_daily: Day-over-day changes in campaign control state.
 --   changed_metric_name: Field that changed (e.g. daily_budget_amount, status, geo_target_ids).
@@ -128,6 +134,58 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_control_diff_daily (
     new_value VARCHAR(65535),
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (campaign_id, snapshot_date, customer_id, changed_metric_name)
+);
+
+-- ppc_campaign_geo_targeting_daily: Geo & location targeting audit (one row per campaign criterion per day). v23 GAQL spec.
+--   criterion_id: campaign_criterion.criterion_id (stable across days for diff tracking).
+--   criterion_type: LOCATION | PROXIMITY.
+--   negative: TRUE = exclusion (location only). NULL for PROXIMITY.
+--   positive_geo_target_type / negative_geo_target_type: From campaign.geo_target_type_setting (DONT_CARE | AREA_OF_INTEREST | LOCATION_OF_PRESENCE).
+--   proximity_street_address, proximity_city_name: For PROXIMITY when API returns. NULL for LOCATION.
+--   estimated_reach: From GeoTargetConstantService.SuggestGeoTargetConstants.reach.
+--   ordinal: 1-based display order within (campaign_id, criterion_type).
+--   latitude_micro, longitude_micro: Center of PROXIMITY radius (micro-degrees); from proximity.geo_point when selectable. NULL for LOCATION. Often null if API does not expose geo_point in GAQL.
+-- Migration: Schema changed (criterion_id PK, campaign_name, geo_target_type_setting, estimated_reach, etc.). To apply:
+--   DROP TABLE IF EXISTS ppc_campaign_geo_targeting_diff_daily;
+--   DROP TABLE IF EXISTS ppc_campaign_geo_targeting_daily;
+--   Then run this file to recreate both tables.
+CREATE TABLE IF NOT EXISTS ppc_campaign_geo_targeting_daily (
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    campaign_id VARCHAR(64) NOT NULL,
+    campaign_name VARCHAR(512),
+    criterion_id VARCHAR(64) NOT NULL,
+    criterion_type VARCHAR(32) NOT NULL,
+    ordinal INTEGER NOT NULL,
+    geo_target_constant VARCHAR(256),
+    geo_name VARCHAR(512),
+    negative BOOLEAN,
+    positive_geo_target_type VARCHAR(64),
+    negative_geo_target_type VARCHAR(64),
+    proximity_street_address VARCHAR(1024),
+    proximity_city_name VARCHAR(256),
+    radius NUMBER(10, 2),
+    radius_units VARCHAR(16),
+    latitude_micro NUMBER(20, 0),
+    longitude_micro NUMBER(20, 0),
+    estimated_reach NUMBER(18, 0),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, customer_id, campaign_id, criterion_type, criterion_id)
+);
+
+-- ppc_campaign_geo_targeting_diff_daily: Day-over-day geo targeting changes (like ppc_campaign_control_diff_daily).
+--   criterion_id: Stable id for add/remove/change. changed_metric_name: criterion_added | criterion_removed | field names.
+CREATE TABLE IF NOT EXISTS ppc_campaign_geo_targeting_diff_daily (
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    campaign_id VARCHAR(64) NOT NULL,
+    criterion_type VARCHAR(32) NOT NULL,
+    criterion_id VARCHAR(64) NOT NULL,
+    changed_metric_name VARCHAR(128) NOT NULL,
+    old_value VARCHAR(65535),
+    new_value VARCHAR(65535),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, customer_id, campaign_id, criterion_type, criterion_id, changed_metric_name)
 );
 
 -- ppc_campaign_outcomes_daily: Campaign performance metrics (one row per campaign per outcome_date).

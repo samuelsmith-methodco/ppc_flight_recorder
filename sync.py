@@ -43,6 +43,7 @@ from storage import (
     get_ad_group_snapshot_for_date,
     get_audience_targeting_snapshot_for_date,
     get_control_state_for_date,
+    get_geo_targeting_for_date,
     get_ga4_acquisition_for_date,
     get_keyword_outcomes_for_date,
     get_keyword_snapshot_for_date,
@@ -53,6 +54,7 @@ from storage import (
     insert_audience_targeting_diff_daily,
     insert_ad_group_outcomes_diff_daily,
     insert_control_diff_daily,
+    insert_geo_targeting_diff_daily,
     insert_ga4_acquisition_diff_daily,
     insert_keyword_change_daily,
     insert_keyword_outcomes_diff_daily,
@@ -66,6 +68,7 @@ from storage import (
     upsert_ad_group_outcomes_daily,
     upsert_campaign_dims,
     upsert_control_state_daily,
+    upsert_geo_targeting_daily,
     upsert_ga4_acquisition_daily,
     upsert_ga4_traffic_acquisition_daily,
     upsert_keyword_dims,
@@ -95,13 +98,13 @@ CONTROL_STATE_METRIC_FIELDS = [
     "daily_budget_micros", "daily_budget_amount", "budget_delivery_method", "bidding_strategy_type",
     "target_cpa_micros", "target_cpa_amount", "target_roas",
     "target_impression_share_location", "target_impression_share_location_fraction_micros",
-    "geo_target_ids", "geo_negative_ids", "geo_radius_json", "location_presence_interest_json",
-    "account_timezone", "device_modifiers_json",
+    "geo_target_ids", "geo_negative_ids", "geo_target_names", "geo_negative_names", "geo_radius_json",
+    "account_timezone",
     "network_settings_target_google_search", "network_settings_target_search_network",
     "network_settings_target_content_network", "network_settings_target_partner_search_network",
     "ad_schedule_json", "audience_target_count",
     "campaign_type", "networks", "campaign_start_date", "campaign_end_date",
-    "location", "active_bid_adj", "devices",
+    "location", "active_bid_adj",
 ]
 
 # Max rows per MERGE in historical backfill to avoid timeouts
@@ -122,8 +125,9 @@ def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
         "target_impression_share_location": row.get("target_impression_share_location"),
         "target_impression_share_location_fraction_micros": row.get("target_impression_share_location_fraction_micros"),
         "geo_target_ids": row.get("geo_target_ids"), "geo_negative_ids": row.get("geo_negative_ids"),
-        "geo_radius_json": row.get("geo_radius_json"), "location_presence_interest_json": row.get("location_presence_interest_json"),
-        "account_timezone": row.get("account_timezone"), "device_modifiers_json": row.get("device_modifiers_json"),
+        "geo_target_names": row.get("geo_target_names"), "geo_negative_names": row.get("geo_negative_names"),
+        "geo_radius_json": row.get("geo_radius_json"),
+        "account_timezone": row.get("account_timezone"),
         "network_settings_target_google_search": row.get("network_settings_target_google_search"),
         "network_settings_target_search_network": row.get("network_settings_target_search_network"),
         "network_settings_target_content_network": row.get("network_settings_target_content_network"),
@@ -133,7 +137,8 @@ def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
         "campaign_type": row.get("campaign_type"), "networks": row.get("networks"),
         "campaign_start_date": row.get("campaign_start_date"),
         "campaign_end_date": row.get("campaign_end_date"),
-        "location": row.get("location"), "active_bid_adj": row.get("active_bid_adj"), "devices": row.get("devices"),
+        "location": row.get("location"),
+        "active_bid_adj": row.get("active_bid_adj"),
     }
 
 
@@ -156,6 +161,68 @@ def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[
                 continue
             diffs.append({
                 "campaign_id": cid,
+                "changed_metric_name": field,
+                "old_value": str(ov) if ov is not None else None,
+                "new_value": str(nv) if nv is not None else None,
+            })
+    return diffs
+
+
+GEO_TARGETING_METRIC_FIELDS = (
+    "geo_target_constant", "geo_name", "negative", "positive_geo_target_type", "negative_geo_target_type",
+    "proximity_street_address", "proximity_city_name", "radius", "radius_units",
+    "latitude_micro", "longitude_micro", "estimated_reach",
+)
+
+
+def _geo_key(r: Dict[str, Any]) -> tuple:
+    return (r.get("campaign_id"), r.get("criterion_type"), str(r.get("criterion_id", "")))
+
+
+def compute_geo_targeting_diffs(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compare geo targeting snapshots day-over-day; return rows for ppc_campaign_geo_targeting_diff_daily.
+    Keys by criterion_id. Emits criterion_added, criterion_removed, and per-field changes.
+    """
+    prior_by_key = {_geo_key(r): r for r in prior}
+    cur_by_key = {_geo_key(r): r for r in current}
+    diffs: List[Dict[str, Any]] = []
+    for r in current:
+        k = _geo_key(r)
+        if k not in prior_by_key:
+            diffs.append({
+                "campaign_id": r.get("campaign_id"),
+                "criterion_type": r.get("criterion_type"),
+                "criterion_id": r.get("criterion_id"),
+                "changed_metric_name": "criterion_added",
+                "old_value": None,
+                "new_value": r.get("geo_target_constant") or (f"radius={r.get('radius')} {r.get('radius_units') or ''}" if r.get("criterion_type") == "PROXIMITY" else ""),
+            })
+    for r in prior:
+        k = _geo_key(r)
+        if k not in cur_by_key:
+            diffs.append({
+                "campaign_id": r.get("campaign_id"),
+                "criterion_type": r.get("criterion_type"),
+                "criterion_id": r.get("criterion_id"),
+                "changed_metric_name": "criterion_removed",
+                "old_value": r.get("geo_target_constant") or (f"radius={r.get('radius')} {r.get('radius_units') or ''}" if r.get("criterion_type") == "PROXIMITY" else ""),
+                "new_value": None,
+            })
+    for r in current:
+        k = _geo_key(r)
+        prev = prior_by_key.get(k)
+        if not prev:
+            continue
+        for field in GEO_TARGETING_METRIC_FIELDS:
+            ov, nv = prev.get(field), r.get(field)
+            if ov is None and nv is None:
+                continue
+            if ov == nv:
+                continue
+            diffs.append({
+                "campaign_id": r.get("campaign_id"),
+                "criterion_type": r.get("criterion_type"),
+                "criterion_id": r.get("criterion_id"),
                 "changed_metric_name": field,
                 "old_value": str(ov) if ov is not None else None,
                 "new_value": str(nv) if nv is not None else None,
@@ -636,6 +703,7 @@ def run_sync(
     control_state_adgroup_only: bool = False,
     control_state_adcreative_only: bool = False,
     control_state_audience_only: bool = False,
+    control_state_campaign_only: bool = False,
 ) -> None:
     snapshot_str = snapshot_date.isoformat()
     prior_date = snapshot_date - timedelta(days=1)
@@ -650,10 +718,32 @@ def run_sync(
                 else " (control state ad group only)" if control_state_adgroup_only
                 else " (ad creative only)" if control_state_adcreative_only
                 else " (audience only)" if control_state_audience_only
+                else " (campaign control state only)" if control_state_campaign_only
                 else ""
             )
             logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, mode_suffix)
             try:
+                if control_state_campaign_only:
+                    # Only campaign control state (ppc_campaign_control_state_daily) + geo targeting snapshot + diff
+                    control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                    if control_rows:
+                        state_for_storage = [_control_state_row_for_storage(r) for r in control_rows]
+                        upsert_control_state_daily(snapshot_date, customer_id, state_for_storage, conn=conn)
+                        upsert_campaign_dims(snapshot_date, customer_id, state_for_storage, conn=conn)
+                        prior_control = get_control_state_for_date(customer_id, prior_date, conn=conn)
+                        if prior_control:
+                            control_diff_list = compute_control_state_diffs(state_for_storage, prior_control)
+                            if control_diff_list:
+                                insert_control_diff_daily(snapshot_date, customer_id, control_diff_list, conn=conn)
+                    # Always update geo targeting for this date (snapshot + diff), including when empty
+                    upsert_geo_targeting_daily(snapshot_date, customer_id, geo_targeting_rows or [], conn=conn)
+                    prior_geo = get_geo_targeting_for_date(customer_id, prior_date, conn=conn)
+                    if prior_geo or (geo_targeting_rows or []):
+                        geo_diff_list = compute_geo_targeting_diffs(prior_geo or [], geo_targeting_rows or [])
+                        if geo_diff_list:
+                            insert_geo_targeting_diff_daily(snapshot_date, customer_id, geo_diff_list, conn=conn)
+                    continue
+
                 if control_state_adcreative_only:
                     # Only ad creative (RSA) snapshot + diff
                     rsa_ads = fetch_ad_creative_snapshot(project=project, google_ads_filters=google_ads_filters)
@@ -746,7 +836,7 @@ def run_sync(
                                 insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
                     continue
 
-                control_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
                 if not control_rows:
                     logger.warning("No control state rows for project=%s", project)
                 else:
@@ -758,6 +848,13 @@ def run_sync(
                         control_diff_list = compute_control_state_diffs(state_for_storage, prior_control)
                         if control_diff_list:
                             insert_control_diff_daily(snapshot_date, customer_id, control_diff_list, conn=conn)
+                if geo_targeting_rows:
+                    upsert_geo_targeting_daily(snapshot_date, customer_id, geo_targeting_rows, conn=conn)
+                    prior_geo = get_geo_targeting_for_date(customer_id, prior_date, conn=conn)
+                    if prior_geo:
+                        geo_diff_list = compute_geo_targeting_diffs(prior_geo, geo_targeting_rows)
+                        if geo_diff_list:
+                            insert_geo_targeting_diff_daily(snapshot_date, customer_id, geo_diff_list, conn=conn)
 
                 # TIER 2: ad group snapshot / change (status, add/remove, rename)
                 ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
@@ -869,7 +966,7 @@ def run_sync(
                 logger.exception("PPC Flight Recorder sync failed for project=%s: %s", project, e)
                 raise
 
-        if control_state_only or control_state_adcreative_only or control_state_audience_only:
+        if control_state_only or control_state_adcreative_only or control_state_audience_only or control_state_campaign_only:
             return
 
         if run_ga4:
@@ -1075,10 +1172,12 @@ def run_historical_sync(
             customer_id = normalize_customer_id(get_google_ads_customer_id(project))
             try:
                 time.sleep(delay_seconds)
-                control_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
                 if control_rows:
                     state_for_storage = [_control_state_row_for_storage(r) for r in control_rows]
                     upsert_control_state_daily(end_date, customer_id, state_for_storage, conn=conn)
+                if geo_targeting_rows:
+                    upsert_geo_targeting_daily(end_date, customer_id, geo_targeting_rows, conn=conn)
             except Exception as e:
                 logger.warning("Control state failed for project=%s: %s", project, e)
 
@@ -1100,6 +1199,7 @@ def main() -> None:
     parser.add_argument("--control-state-adgroup-only", action="store_true", help="Update only ad group snapshot and diff (ppc_ad_group_snapshot_daily, ppc_ad_group_change_daily)")
     parser.add_argument("--control-state-adcreative-only", action="store_true", help="Update only ad creative (RSA) snapshot and diff (ppc_ad_creative_snapshot_daily, ppc_ad_creative_diff_daily)")
     parser.add_argument("--control-state-audience-only", action="store_true", help="Update only audience targeting snapshot and diff (ppc_audience_targeting_snapshot_daily, ppc_audience_targeting_diff_daily)")
+    parser.add_argument("--control-state-campaign-only", action="store_true", help="Update only campaign control state (ppc_campaign_control_state_daily, ppc_campaign_control_diff_daily)")
     args = parser.parse_args()
 
     projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
@@ -1139,6 +1239,7 @@ def main() -> None:
         control_state_adgroup_only=args.control_state_adgroup_only,
         control_state_adcreative_only=args.control_state_adcreative_only,
         control_state_audience_only=args.control_state_audience_only,
+        control_state_campaign_only=args.control_state_campaign_only,
     )
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 

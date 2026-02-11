@@ -4,7 +4,7 @@ This is a **separate project** from Leonardo. It can be run on its own with its 
 
 ## What it does
 
-- Fetches **Google Ads** campaign control state (budget, bidding, status) and daily outcomes at **campaign**, **ad group**, and **keyword** levels (impressions, clicks, cost, conversions, ROAS, etc.).
+- Fetches **Google Ads** campaign control state (budget, bidding, status), **geo & location targeting** (include/exclude locations, presence vs interest, radius), and daily outcomes at **campaign**, **ad group**, and **keyword** levels (impressions, clicks, cost, conversions, ROAS, etc.).
 - Optionally fetches **GA4** traffic acquisition by session dimension (channel group, source/medium, campaign, etc.) via an Apps Script URL.
 - Writes daily snapshots and day-over-day diffs to **Snowflake** (control state, campaign/ad group/keyword outcomes and outcome diffs, GA4 tables).
 
@@ -41,6 +41,10 @@ Edit `.env` and set:
 
 Do **not** commit `.env`.
 
+**HTTP proxy:** If you use `http_proxy` or `https_proxy`, the value must include the scheme (e.g. `http://127.0.0.1:3213`). A value like `127.0.0.1:3213` will cause a parse error.
+
+**Google Ads API v23:** Control-state queries use v23-safe fields only. See the [v23 fields reference](https://developers.google.com/google-ads/api/fields/v23/) when changing GAQL. Removed in v23: `campaign_criterion.location.presence_or_interest`, `campaign_criterion.proximity.latitude_in_micro_degrees` / `longitude_in_micro_degrees`, `ad_group_criterion.device.type`.
+
 ### 3. Snowflake tables
 
 Run the DDL in your Snowflake database/schema (same account you use in `.env`):
@@ -50,7 +54,7 @@ Run the DDL in your Snowflake database/schema (same account you use in `.env`):
 sql/ppc-flight-recorder-tables.sql
 ```
 
-Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, keyword/negative keyword snapshot and diff tables, ad group snapshot and change tables, `ppc_ad_creative_snapshot_daily`, `ppc_ad_creative_diff_daily`, audience targeting tables, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
+Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_geo_targeting_daily`, `ppc_campaign_geo_targeting_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, keyword/negative keyword snapshot and diff tables, ad group snapshot and change tables, `ppc_ad_creative_snapshot_daily`, `ppc_ad_creative_diff_daily`, audience targeting tables, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
 
 ## Run
 
@@ -78,8 +82,11 @@ python sync.py --start-date 2024-02-06 --end-date 2025-02-06 --batch-days 30 --g
 Use one of these flags to update only specific tables (no outcomes, no GA4):
 
 ```bash
-# Campaign control state only (ppc_campaign_control_state_daily, ppc_campaign_control_diff_daily)
+# All control state tables (campaign, audience, ad creative, keywords, etc.) but no outcomes/GA4
 python sync.py --date 2026-02-10 --control-state-only
+
+# Campaign control state + geo targeting (ppc_campaign_control_state_daily, ppc_campaign_control_diff_daily, ppc_campaign_geo_targeting_daily, ppc_campaign_geo_targeting_diff_daily)
+python sync.py --date 2026-02-10 --control-state-campaign-only
 
 # Keyword and negative keyword snapshots and diffs only
 python sync.py --date 2026-02-10 --control-state-keyword-only
@@ -105,11 +112,14 @@ python sync.py --date 2026-02-10 --control-state-audience-only
 | `--batch-days N` | Chunk size in days for historical fetch (default: 30) |
 | `--no-diffs` | Skip outcome/GA4 diffs during historical backfill (default) |
 | `--diffs` | Compute outcome/GA4 diffs during historical backfill |
-| `--control-state-only` | Only campaign control state and control diff tables |
+| `--control-state-only` | All control state tables (no outcomes, no GA4) |
+| `--control-state-campaign-only` | Only campaign control state, control diff, geo targeting, and geo targeting diff tables |
 | `--control-state-keyword-only` | Only keyword and negative keyword snapshot/diff tables |
 | `--control-state-adgroup-only` | Only ad group snapshot and change tables |
 | `--control-state-adcreative-only` | Only ad creative snapshot and diff tables |
 | `--control-state-audience-only` | Only audience targeting snapshot and diff tables |
+
+**Checking geo in Google Ads:** For locations and radius targeting, check **Campaigns** → campaign → **Locations**. Per-criterion geo (including presence/interest when available) is stored in `ppc_campaign_geo_targeting_daily`.
 
 Cron example (daily at 2 AM with GA4):
 
@@ -176,3 +186,4 @@ ppc_flight_recorder/
 - **Run independently** – use this folder’s venv and `python sync.py`; no need to start the Leonardo backend.
 
 The Leonardo repo can still contain the older backend integration (e.g. `backend/scripts/ppc_flight_recorder_sync.py`); this standalone project is the one intended to be run separately.
+FYI:https://developers.google.com/google-ads/api/fields/v20/campaign#campaign.end_date_time
