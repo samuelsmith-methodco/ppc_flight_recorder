@@ -50,7 +50,7 @@ Run the DDL in your Snowflake database/schema (same account you use in `.env`):
 sql/ppc-flight-recorder-tables.sql
 ```
 
-Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
+Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, keyword/negative keyword snapshot and diff tables, ad group snapshot and change tables, `ppc_ad_creative_snapshot_daily`, `ppc_ad_creative_diff_daily`, audience targeting tables, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
 
 ## Run
 
@@ -71,10 +71,41 @@ python sync.py --ga4
 
 # Historical backfill: sync last 1 year with batch size 30 days, GA4 included, and diffs computed
 python sync.py --start-date 2024-02-06 --end-date 2025-02-06 --batch-days 30 --ga4 --diffs
-
-# Control state only: update only ppc_campaign_control_state_daily and ppc_campaign_control_diff_daily (no outcomes, no GA4)
-python sync.py --date 2026-02-10 --control-state-only
 ```
+
+### Partial sync (control-state only modes)
+
+Use one of these flags to update only specific tables (no outcomes, no GA4):
+
+```bash
+# Campaign control state only (ppc_campaign_control_state_daily, ppc_campaign_control_diff_daily)
+python sync.py --date 2026-02-10 --control-state-only
+
+# Keyword and negative keyword snapshots and diffs only
+python sync.py --date 2026-02-10 --control-state-keyword-only
+
+# Ad group snapshot and diff only (ppc_ad_group_snapshot_daily, ppc_ad_group_change_daily)
+python sync.py --date 2026-02-10 --control-state-adgroup-only
+
+# Ad creative (all ad types) snapshot and diff only (ppc_ad_creative_snapshot_daily, ppc_ad_creative_diff_daily)
+python sync.py --date 2026-02-10 --control-state-adcreative-only
+```
+
+### CLI reference (sync.py)
+
+| Option | Description |
+|--------|-------------|
+| `--date YYYY-MM-DD` | Snapshot date (default: yesterday) |
+| `--project NAME` | Single project (default: all from PPC_PROJECTS) |
+| `--ga4` | Also fetch and store GA4 traffic acquisition |
+| `--start-date`, `--end-date` | Historical backfill range (use with `--batch-days`) |
+| `--batch-days N` | Chunk size in days for historical fetch (default: 30) |
+| `--no-diffs` | Skip outcome/GA4 diffs during historical backfill (default) |
+| `--diffs` | Compute outcome/GA4 diffs during historical backfill |
+| `--control-state-only` | Only campaign control state and control diff tables |
+| `--control-state-keyword-only` | Only keyword and negative keyword snapshot/diff tables |
+| `--control-state-adgroup-only` | Only ad group snapshot and change tables |
+| `--control-state-adcreative-only` | Only ad creative snapshot and diff tables |
 
 Cron example (daily at 2 AM with GA4):
 
@@ -106,7 +137,7 @@ The server listens on **port 9001**. To use a different port: `uvicorn server:ap
 - **Endpoints**:
   - `GET /health` – health check
   - `GET /schedule` – current schedule and next run time
-  - `POST /sync` – trigger sync once (optional body: `{"date": "YYYY-MM-DD", "control_state_only": true}`; default yesterday, full sync)
+  - `POST /sync` – trigger sync once. Optional body: `{"date": "YYYY-MM-DD"}`, `{"control_state_only": true}`, `{"control_state_keyword_only": true}`, or `{"control_state_adgroup_only": true}`. Default: yesterday, full sync with GA4 and diffs.
 
 Set in `.env` to change the daily run time (e.g. 9:30 PM EST):
 

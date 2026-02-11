@@ -138,10 +138,11 @@ def fetch_campaign_control_state(
     client = get_client()
     customer_id_clean = _customer_id_clean(project)
     ga_service = client.get_service("GoogleAdsService")
+    # v23 uses campaign.start_date_time and campaign.end_date_time (format "yyyy-MM-dd HH:mm:ss"); older API used campaign.start_date/end_date.
     query_with_targets = """
         SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign.advertising_channel_sub_type,
                campaign.bidding_strategy_type, campaign.bidding_strategy,
-               campaign.start_date, campaign.end_date,
+               campaign.start_date_time, campaign.end_date_time,
                campaign.maximize_conversions.target_cpa_micros,
                campaign.target_cpa.target_cpa_micros,
                campaign.maximize_conversion_value.target_roas,
@@ -159,7 +160,7 @@ def fetch_campaign_control_state(
     query_base = """
         SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign.advertising_channel_sub_type,
                campaign.bidding_strategy_type, campaign.bidding_strategy,
-               campaign.start_date, campaign.end_date,
+               campaign.start_date_time, campaign.end_date_time,
                campaign.network_settings.target_google_search,
                campaign.network_settings.target_search_network,
                campaign.network_settings.target_content_network,
@@ -550,8 +551,15 @@ def fetch_campaign_control_state(
                     if len(s) >= 8 and s.isdigit():
                         return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
                     return s if s else None
-                campaign_start_date = _date_str(getattr(camp, "start_date", None))
-                campaign_end_date = _date_str(getattr(camp, "end_date", None))
+                def _campaign_date_str(val: Any) -> Optional[str]:
+                    if val is None:
+                        return None
+                    s = str(val).strip()
+                    if len(s) >= 10 and s[4:5] == "-":
+                        return s[:10]
+                    return _date_str(val)
+                campaign_start_date = _campaign_date_str(getattr(camp, "start_date_time", None)) or _date_str(getattr(camp, "start_date", None))
+                campaign_end_date = _campaign_date_str(getattr(camp, "end_date_time", None)) or _date_str(getattr(camp, "end_date", None))
                 campaign_type_parts = [channel_type or "", sub_type or ""]
                 campaign_type = " ".join(p for p in campaign_type_parts if p).strip() or (channel_type or None)
                 network_parts = []
