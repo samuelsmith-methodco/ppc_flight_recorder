@@ -64,28 +64,47 @@ def upsert_control_state_daily(
             params[prefix + "target_cpa_micros"] = r.get("target_cpa_micros")
             params[prefix + "target_cpa_amount"] = r.get("target_cpa_amount")
             params[prefix + "target_roas"] = r.get("target_roas")
+            params[prefix + "target_impression_share_location"] = _safe_str(r.get("target_impression_share_location"), 32)
+            params[prefix + "target_impression_share_location_fraction_micros"] = r.get("target_impression_share_location_fraction_micros")
             params[prefix + "geo_target_ids"] = _safe_str(r.get("geo_target_ids"), 4096)
+            params[prefix + "geo_negative_ids"] = _safe_str(r.get("geo_negative_ids"), 4096)
+            params[prefix + "geo_radius_json"] = _safe_str(r.get("geo_radius_json"), 65535)
+            params[prefix + "location_presence_interest_json"] = _safe_str(r.get("location_presence_interest_json"), 4096)
+            params[prefix + "account_timezone"] = _safe_str(r.get("account_timezone"), 64)
+            params[prefix + "device_modifiers_json"] = _safe_str(r.get("device_modifiers_json"), 4096)
             params[prefix + "network_settings_target_google_search"] = r.get("network_settings_target_google_search")
             params[prefix + "network_settings_target_search_network"] = r.get("network_settings_target_search_network")
             params[prefix + "network_settings_target_content_network"] = r.get("network_settings_target_content_network")
             params[prefix + "network_settings_target_partner_search_network"] = r.get("network_settings_target_partner_search_network")
             params[prefix + "ad_schedule_json"] = _safe_str(r.get("ad_schedule_json"), 65535)
             params[prefix + "audience_target_count"] = r.get("audience_target_count")
+            params[prefix + "campaign_type"] = _safe_str(r.get("campaign_type"), 128)
+            params[prefix + "networks"] = _safe_str(r.get("networks"), 256)
+            params[prefix + "campaign_start_date"] = r.get("campaign_start_date")
+            params[prefix + "campaign_end_date"] = r.get("campaign_end_date")
+            params[prefix + "location"] = _safe_str(r.get("location"), 4096)
+            params[prefix + "active_bid_adj"] = _safe_str(r.get("active_bid_adj"), 256)
+            params[prefix + "devices"] = _safe_str(r.get("devices"), 512)
             values_parts.append(
                 f"(%(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_name)s, %(r{i}_status)s, "
                 f"%(r{i}_advertising_channel_type)s, %(r{i}_advertising_channel_sub_type)s, %(r{i}_daily_budget_micros)s, %(r{i}_daily_budget_amount)s, "
                 f"%(r{i}_budget_delivery_method)s, %(r{i}_bidding_strategy_type)s, %(r{i}_target_cpa_micros)s, %(r{i}_target_cpa_amount)s, %(r{i}_target_roas)s, "
-                f"%(r{i}_geo_target_ids)s, %(r{i}_network_settings_target_google_search)s, %(r{i}_network_settings_target_search_network)s, "
+                f"%(r{i}_target_impression_share_location)s, %(r{i}_target_impression_share_location_fraction_micros)s, "
+                f"%(r{i}_geo_target_ids)s, %(r{i}_geo_negative_ids)s, %(r{i}_geo_radius_json)s, %(r{i}_location_presence_interest_json)s, %(r{i}_account_timezone)s, %(r{i}_device_modifiers_json)s, "
+                f"%(r{i}_network_settings_target_google_search)s, %(r{i}_network_settings_target_search_network)s, "
                 f"%(r{i}_network_settings_target_content_network)s, %(r{i}_network_settings_target_partner_search_network)s, "
-                f"%(r{i}_ad_schedule_json)s, %(r{i}_audience_target_count)s)"
+                f"%(r{i}_ad_schedule_json)s, %(r{i}_audience_target_count)s, "
+                f"%(r{i}_campaign_type)s, %(r{i}_networks)s, %(r{i}_campaign_start_date)s::DATE, %(r{i}_campaign_end_date)s::DATE, "
+                f"%(r{i}_location)s, %(r{i}_active_bid_adj)s, %(r{i}_devices)s)"
             )
         values_sql = ",\n                ".join(values_parts)
+        v_cols = "campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_radius_json, location_presence_interest_json, account_timezone, device_modifiers_json, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj, devices"
         merge_sql = f"""
             MERGE INTO {tbl} AS target
             USING (
                 SELECT * FROM (VALUES
                 {values_sql}
-                ) AS v(campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, geo_target_ids, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count)
+                ) AS v({v_cols})
             ) AS source
             ON target.campaign_id = source.campaign_id AND target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id
             WHEN MATCHED THEN UPDATE SET
@@ -95,13 +114,17 @@ def upsert_control_state_daily(
                 daily_budget_micros = source.daily_budget_micros, daily_budget_amount = source.daily_budget_amount,
                 budget_delivery_method = source.budget_delivery_method, bidding_strategy_type = source.bidding_strategy_type,
                 target_cpa_micros = source.target_cpa_micros, target_cpa_amount = source.target_cpa_amount, target_roas = source.target_roas,
-                geo_target_ids = source.geo_target_ids, network_settings_target_google_search = source.network_settings_target_google_search,
+                target_impression_share_location = source.target_impression_share_location, target_impression_share_location_fraction_micros = source.target_impression_share_location_fraction_micros,
+                geo_target_ids = source.geo_target_ids, geo_negative_ids = source.geo_negative_ids, geo_radius_json = source.geo_radius_json, location_presence_interest_json = source.location_presence_interest_json, account_timezone = source.account_timezone, device_modifiers_json = source.device_modifiers_json, network_settings_target_google_search = source.network_settings_target_google_search,
                 network_settings_target_search_network = source.network_settings_target_search_network,
                 network_settings_target_content_network = source.network_settings_target_content_network,
                 network_settings_target_partner_search_network = source.network_settings_target_partner_search_network,
-                ad_schedule_json = source.ad_schedule_json, audience_target_count = source.audience_target_count
-            WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, geo_target_ids, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count)
-            VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.campaign_name, source.status, source.advertising_channel_type, source.advertising_channel_sub_type, source.daily_budget_micros, source.daily_budget_amount, source.budget_delivery_method, source.bidding_strategy_type, source.target_cpa_micros, source.target_cpa_amount, source.target_roas, source.geo_target_ids, source.network_settings_target_google_search, source.network_settings_target_search_network, source.network_settings_target_content_network, source.network_settings_target_partner_search_network, source.ad_schedule_json, source.audience_target_count)
+                ad_schedule_json = source.ad_schedule_json, audience_target_count = source.audience_target_count,
+                campaign_type = source.campaign_type, networks = source.networks,
+                campaign_start_date = source.campaign_start_date, campaign_end_date = source.campaign_end_date,
+                location = source.location, active_bid_adj = source.active_bid_adj, devices = source.devices
+            WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_radius_json, location_presence_interest_json, account_timezone, device_modifiers_json, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj, devices)
+            VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.campaign_name, source.status, source.advertising_channel_type, source.advertising_channel_sub_type, source.daily_budget_micros, source.daily_budget_amount, source.budget_delivery_method, source.bidding_strategy_type, source.target_cpa_micros, source.target_cpa_amount, source.target_roas, source.target_impression_share_location, source.target_impression_share_location_fraction_micros, source.geo_target_ids, source.geo_negative_ids, source.geo_radius_json, source.location_presence_interest_json, source.account_timezone, source.device_modifiers_json, source.network_settings_target_google_search, source.network_settings_target_search_network, source.network_settings_target_content_network, source.network_settings_target_partner_search_network, source.ad_schedule_json, source.audience_target_count, source.campaign_type, source.networks, source.campaign_start_date, source.campaign_end_date, source.location, source.active_bid_adj, source.devices)
             """
         execute(conn, merge_sql, params)
         conn.commit()
@@ -259,7 +282,7 @@ def get_control_state_for_date(customer_id: str, snapshot_date: date, conn: Opti
     tbl = _table("ppc_campaign_control_state_daily")
 
     def do(conn):
-        q = f"SELECT campaign_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, geo_target_ids, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        q = f"SELECT campaign_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, target_impression_share_location, target_impression_share_location_fraction_micros, geo_target_ids, geo_negative_ids, geo_radius_json, location_presence_interest_json, account_timezone, device_modifiers_json, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count, campaign_type, networks, campaign_start_date, campaign_end_date, location, active_bid_adj, devices FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
         return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
 
     df = _run_with_conn(conn, do)
@@ -555,6 +578,95 @@ def insert_ad_group_outcomes_diff_daily(outcome_date: date, customer_id: str, di
     return len(diff_rows)
 
 
+# ---- TIER 2: Ad group structure snapshot / change ----
+
+def upsert_ad_group_snapshot_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_ad_group_snapshot_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            prefix = f"r{i}_"
+            params[prefix + "ad_group_id"] = r.get("ad_group_id")
+            params[prefix + "campaign_id"] = r.get("campaign_id")
+            params[prefix + "snapshot_date"] = date_str
+            params[prefix + "customer_id"] = customer_id
+            params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name"), 512)
+            params[prefix + "status"] = _safe_str(r.get("status"), 32)
+            values_parts.append(
+                f"(%(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_ad_group_name)s, %(r{i}_status)s)"
+            )
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(ad_group_id, campaign_id, snapshot_date, customer_id, ad_group_name, status)) AS source
+            ON target.ad_group_id = source.ad_group_id AND target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id
+            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, ad_group_name = source.ad_group_name, status = source.status
+            WHEN NOT MATCHED THEN INSERT (ad_group_id, campaign_id, snapshot_date, customer_id, ad_group_name, status)
+            VALUES (source.ad_group_id, source.campaign_id, source.snapshot_date, source.customer_id, source.ad_group_name, source.status)
+        """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s ad_group_snapshot rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_ad_group_snapshot_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    tbl = _table("ppc_ad_group_snapshot_daily")
+
+    def do(conn):
+        q = f"SELECT ad_group_id, campaign_id, ad_group_name, status FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_ad_group_change_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_ad_group_change_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, change_type, ad_group_name, status, old_value, new_value) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(change_type)s, %(ad_group_name)s, %(status)s, %(old_value)s, %(new_value)s)"
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r["campaign_id"],
+                "ad_group_id": r["ad_group_id"],
+                "change_type": _safe_str(r.get("change_type"), 32),
+                "ad_group_name": _safe_str(r.get("ad_group_name"), 512),
+                "status": _safe_str(r.get("status"), 32),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s ad_group_change rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
 def upsert_keyword_outcomes_daily(outcome_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
     if not rows:
         return 0
@@ -768,6 +880,422 @@ def upsert_ad_group_dims(reference_date: date, customer_id: str, rows: List[Dict
             })
         conn.commit()
         logger.info("ppc_flight_recorder: upserted %s ad_group_dims for customer_id=%s", len(seen), customer_id)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+# ---- TIER 2: Keyword snapshot / change ----
+
+def upsert_keyword_snapshot_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    if not rows:
+        return 0
+    # Deduplicate by table PK so MERGE source has at most one row per key (Snowflake errors on duplicate source rows).
+    # PK is (keyword_criterion_id, snapshot_date, customer_id, ad_group_id).
+    seen = set()
+    deduped = []
+    for r in rows:
+        key = (str(r.get("keyword_criterion_id", "")), snapshot_date.isoformat(), customer_id, str(r.get("ad_group_id", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    if len(deduped) < len(rows):
+        logger.info("ppc_flight_recorder: deduplicated keyword_snapshot_daily %s -> %s rows by (keyword_criterion_id, snapshot_date, customer_id, ad_group_id)", len(rows), len(deduped))
+    rows = deduped
+
+    tbl = _table("ppc_keyword_snapshot_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            prefix = f"r{i}_"
+            params[prefix + "keyword_criterion_id"] = str(r.get("keyword_criterion_id", ""))
+            params[prefix + "ad_group_id"] = r.get("ad_group_id")
+            params[prefix + "campaign_id"] = r.get("campaign_id")
+            params[prefix + "snapshot_date"] = date_str
+            params[prefix + "customer_id"] = customer_id
+            params[prefix + "keyword_text"] = _safe_str(r.get("keyword_text"), 1024)
+            params[prefix + "match_type"] = _safe_str(r.get("match_type"), 32)
+            params[prefix + "keyword_level"] = _safe_str(r.get("keyword_level") or "AD_GROUP", 32)
+            params[prefix + "campaign_name"] = _safe_str(r.get("campaign_name"), 512)
+            params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name"), 512)
+            values_parts.append(
+                f"(%(r{i}_keyword_criterion_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_keyword_level)s, %(r{i}_campaign_name)s, %(r{i}_ad_group_name)s)"
+            )
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(keyword_criterion_id, ad_group_id, campaign_id, snapshot_date, customer_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)) AS source
+            ON target.keyword_criterion_id = source.keyword_criterion_id AND target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.ad_group_id = source.ad_group_id
+            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, keyword_text = source.keyword_text, match_type = source.match_type, keyword_level = source.keyword_level, campaign_name = source.campaign_name, ad_group_name = source.ad_group_name
+            WHEN NOT MATCHED THEN INSERT (keyword_criterion_id, ad_group_id, campaign_id, snapshot_date, customer_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)
+            VALUES (source.keyword_criterion_id, source.ad_group_id, source.campaign_id, source.snapshot_date, source.customer_id, source.keyword_text, source.match_type, source.keyword_level, source.campaign_name, source.ad_group_name)
+        """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s keyword_snapshot rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_keyword_snapshot_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    tbl = _table("ppc_keyword_snapshot_daily")
+
+    def do(conn):
+        q = f"SELECT keyword_criterion_id, ad_group_id, campaign_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_keyword_change_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_keyword_change_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, keyword_criterion_id, change_type, keyword_text, match_type, old_value, new_value) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(keyword_criterion_id)s, %(change_type)s, %(keyword_text)s, %(match_type)s, %(old_value)s, %(new_value)s)"
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r["campaign_id"],
+                "ad_group_id": r["ad_group_id"],
+                "keyword_criterion_id": r["keyword_criterion_id"],
+                "change_type": _safe_str(r.get("change_type"), 32),
+                "keyword_text": _safe_str(r.get("keyword_text"), 1024),
+                "match_type": _safe_str(r.get("match_type"), 32),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s keyword_change rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+# ---- TIER 2: Negative keyword snapshot / diff ----
+
+def upsert_negative_keyword_snapshot_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    if not rows:
+        return 0
+    # Deduplicate by table PK so MERGE source has at most one row per key (Snowflake errors on duplicate source rows).
+    # PK is (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id).
+    date_str = snapshot_date.isoformat()
+    seen = set()
+    deduped = []
+    for r in rows:
+        ad_group_id = r.get("ad_group_id") if r.get("ad_group_id") is not None else ""
+        key = (date_str, customer_id, str(r.get("campaign_id", "")), ad_group_id, str(r.get("criterion_id", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    if len(deduped) < len(rows):
+        logger.info(
+            "ppc_flight_recorder: deduplicated negative_keyword_snapshot_daily %s -> %s rows by (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id)",
+            len(rows), len(deduped),
+        )
+    rows = deduped
+
+    tbl = _table("ppc_negative_keyword_snapshot_daily")
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            prefix = f"r{i}_"
+            ad_group_id = r.get("ad_group_id")
+            if ad_group_id is None:
+                ad_group_id = ""
+            params[prefix + "snapshot_date"] = date_str
+            params[prefix + "customer_id"] = customer_id
+            params[prefix + "campaign_id"] = r.get("campaign_id")
+            params[prefix + "ad_group_id"] = ad_group_id
+            params[prefix + "criterion_id"] = str(r.get("criterion_id", ""))
+            params[prefix + "keyword_text"] = _safe_str(r.get("keyword_text"), 1024)
+            params[prefix + "match_type"] = _safe_str(r.get("match_type"), 32)
+            params[prefix + "keyword_level"] = _safe_str(r.get("keyword_level") or ("AD_GROUP" if ad_group_id else "CAMPAIGN"), 32)
+            params[prefix + "campaign_name"] = _safe_str(r.get("campaign_name"), 512)
+            params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name"), 512)
+            values_parts.append(
+                f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_group_id)s, %(r{i}_criterion_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_keyword_level)s, %(r{i}_campaign_name)s, %(r{i}_ad_group_name)s)"
+            )
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)) AS source
+            ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.campaign_id = source.campaign_id AND target.ad_group_id = source.ad_group_id AND target.criterion_id = source.criterion_id
+            WHEN MATCHED THEN UPDATE SET keyword_text = source.keyword_text, match_type = source.match_type, keyword_level = source.keyword_level, campaign_name = source.campaign_name, ad_group_name = source.ad_group_name
+            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)
+            VALUES (source.snapshot_date, source.customer_id, source.campaign_id, source.ad_group_id, source.criterion_id, source.keyword_text, source.match_type, source.keyword_level, source.campaign_name, source.ad_group_name)
+        """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s negative_keyword_snapshot rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_negative_keyword_snapshot_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    tbl = _table("ppc_negative_keyword_snapshot_daily")
+
+    def do(conn):
+        q = f"SELECT campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_negative_keyword_diff_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_negative_keyword_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, change_type, keyword_text, match_type, old_value, new_value) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(criterion_id)s, %(change_type)s, %(keyword_text)s, %(match_type)s, %(old_value)s, %(new_value)s)"
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r["campaign_id"],
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": r["criterion_id"],
+                "change_type": _safe_str(r.get("change_type"), 32),
+                "keyword_text": _safe_str(r.get("keyword_text"), 1024),
+                "match_type": _safe_str(r.get("match_type"), 32),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s negative_keyword_diff rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+# ---- TIER 2: Ad creative (RSA) snapshot / diff ----
+
+def upsert_ad_creative_snapshot_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_ad_creative_snapshot_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            prefix = f"r{i}_"
+            params[prefix + "snapshot_date"] = date_str
+            params[prefix + "customer_id"] = customer_id
+            params[prefix + "ad_group_id"] = r.get("ad_group_id")
+            params[prefix + "campaign_id"] = r.get("campaign_id")
+            params[prefix + "ad_id"] = str(r.get("ad_id", ""))
+            params[prefix + "ad_type"] = _safe_str(r.get("ad_type"), 64)
+            params[prefix + "status"] = _safe_str(r.get("status"), 32)
+            params[prefix + "headlines_json"] = _safe_str(r.get("headlines_json"), 65535)
+            params[prefix + "descriptions_json"] = _safe_str(r.get("descriptions_json"), 65535)
+            params[prefix + "final_urls"] = _safe_str(r.get("final_urls"), 65535)
+            params[prefix + "path1"] = _safe_str(r.get("path1"), 512)
+            params[prefix + "path2"] = _safe_str(r.get("path2"), 512)
+            params[prefix + "policy_summary_json"] = _safe_str(r.get("policy_summary_json"), 65535)
+            values_parts.append(
+                f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_id)s, %(r{i}_ad_type)s, %(r{i}_status)s, %(r{i}_headlines_json)s, %(r{i}_descriptions_json)s, %(r{i}_final_urls)s, %(r{i}_path1)s, %(r{i}_path2)s, %(r{i}_policy_summary_json)s)"
+            )
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json)) AS source
+            ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.ad_group_id = source.ad_group_id AND target.ad_id = source.ad_id
+            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, ad_type = source.ad_type, status = source.status, headlines_json = source.headlines_json, descriptions_json = source.descriptions_json, final_urls = source.final_urls, path1 = source.path1, path2 = source.path2, policy_summary_json = source.policy_summary_json
+            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json)
+            VALUES (source.snapshot_date, source.customer_id, source.ad_group_id, source.campaign_id, source.ad_id, source.ad_type, source.status, source.headlines_json, source.descriptions_json, source.final_urls, source.path1, source.path2, source.policy_summary_json)
+        """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s ad_creative_snapshot rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_ad_creative_snapshot_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    tbl = _table("ppc_ad_creative_snapshot_daily")
+
+    def do(conn):
+        q = f"SELECT ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_ad_creative_diff_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_ad_creative_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, ad_group_id, ad_id, changed_metric_name, old_value, new_value) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(ad_group_id)s, %(ad_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "ad_group_id": r["ad_group_id"],
+                "ad_id": r["ad_id"],
+                "changed_metric_name": _safe_str(r["changed_metric_name"], 128),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s ad_creative_diff rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+# ---- TIER 2: Audience targeting snapshot / diff ----
+
+def upsert_audience_targeting_snapshot_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_audience_targeting_snapshot_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        values_parts = []
+        params = {}
+        for i, r in enumerate(rows):
+            prefix = f"r{i}_"
+            ad_group_id = r.get("ad_group_id") or ""
+            params[prefix + "snapshot_date"] = date_str
+            params[prefix + "customer_id"] = customer_id
+            params[prefix + "campaign_id"] = r.get("campaign_id")
+            params[prefix + "ad_group_id"] = ad_group_id
+            params[prefix + "criterion_id"] = str(r.get("criterion_id", ""))
+            params[prefix + "audience_type"] = _safe_str(r.get("audience_type"), 64)
+            params[prefix + "audience_id"] = _safe_str(r.get("audience_id"), 256)
+            params[prefix + "audience_name"] = _safe_str(r.get("audience_name"), 512)
+            params[prefix + "targeting_mode"] = _safe_str(r.get("targeting_mode"), 32)
+            params[prefix + "bid_modifier"] = r.get("bid_modifier")
+            params[prefix + "negative"] = r.get("negative")
+            values_parts.append(
+                f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_group_id)s, %(r{i}_criterion_id)s, "
+                f"%(r{i}_audience_type)s, %(r{i}_audience_id)s, %(r{i}_audience_name)s, %(r{i}_targeting_mode)s, %(r{i}_bid_modifier)s, %(r{i}_negative)s)"
+            )
+        values_sql = ",\n                ".join(values_parts)
+        merge_sql = f"""
+            MERGE INTO {tbl} AS target
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative)) AS source
+            ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.campaign_id = source.campaign_id AND target.ad_group_id = source.ad_group_id AND target.criterion_id = source.criterion_id
+            WHEN MATCHED THEN UPDATE SET audience_type = source.audience_type, audience_id = source.audience_id, audience_name = source.audience_name, targeting_mode = source.targeting_mode, bid_modifier = source.bid_modifier, negative = source.negative
+            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative)
+            VALUES (source.snapshot_date, source.customer_id, source.campaign_id, source.ad_group_id, source.criterion_id, source.audience_type, source.audience_id, source.audience_name, source.targeting_mode, source.bid_modifier, source.negative)
+        """
+        execute(conn, merge_sql, params)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s audience_targeting_snapshot rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_audience_targeting_snapshot_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    tbl = _table("ppc_audience_targeting_snapshot_daily")
+
+    def do(conn):
+        q = f"SELECT campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_audience_targeting_diff_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    if not rows:
+        return 0
+    tbl = _table("ppc_audience_targeting_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, change_type, audience_type, audience_id, audience_name, targeting_mode, old_value, new_value) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(criterion_id)s, %(change_type)s, %(audience_type)s, %(audience_id)s, %(audience_name)s, %(targeting_mode)s, %(old_value)s, %(new_value)s)"
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r["campaign_id"],
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": r["criterion_id"],
+                "change_type": _safe_str(r.get("change_type"), 32),
+                "audience_type": _safe_str(r.get("audience_type"), 64),
+                "audience_id": _safe_str(r.get("audience_id"), 256),
+                "audience_name": _safe_str(r.get("audience_name"), 512),
+                "targeting_mode": _safe_str(r.get("targeting_mode"), 32),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s audience_targeting_diff rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
 
     _run_with_conn(conn, do)
     return len(rows)

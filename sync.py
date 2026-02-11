@@ -25,25 +25,43 @@ from typing import Any, Dict, List, Optional
 from config import PPC_PROJECTS, get_google_ads_customer_id, normalize_customer_id
 from ga4_client import fetch_ga4_acquisition_all_sync
 from google_ads_client import (
+    fetch_ad_creative_snapshot,
+    fetch_ad_group_structure_snapshot,
     fetch_ad_groups_daily,
+    fetch_audience_targeting_snapshot,
     fetch_campaign_control_state,
     fetch_campaigns,
     fetch_campaigns_daily,
+    fetch_keyword_criteria_snapshot,
     fetch_keywords_daily,
+    fetch_negative_keywords_snapshot,
 )
 from snowflake_connection import get_connection
 from storage import (
+    get_ad_creative_snapshot_for_date,
     get_ad_group_outcomes_for_date,
+    get_ad_group_snapshot_for_date,
+    get_audience_targeting_snapshot_for_date,
     get_control_state_for_date,
     get_ga4_acquisition_for_date,
     get_keyword_outcomes_for_date,
+    get_keyword_snapshot_for_date,
+    get_negative_keyword_snapshot_for_date,
     get_outcomes_for_date,
+    insert_ad_creative_diff_daily,
+    insert_ad_group_change_daily,
+    insert_audience_targeting_diff_daily,
     insert_ad_group_outcomes_diff_daily,
     insert_control_diff_daily,
     insert_ga4_acquisition_diff_daily,
+    insert_keyword_change_daily,
     insert_keyword_outcomes_diff_daily,
+    insert_negative_keyword_diff_daily,
     insert_outcomes_diff_daily,
+    upsert_ad_creative_snapshot_daily,
     upsert_ad_group_dims,
+    upsert_ad_group_snapshot_daily,
+    upsert_audience_targeting_snapshot_daily,
     upsert_ad_group_outcomes_batch,
     upsert_ad_group_outcomes_daily,
     upsert_campaign_dims,
@@ -53,6 +71,8 @@ from storage import (
     upsert_keyword_dims,
     upsert_keyword_outcomes_batch,
     upsert_keyword_outcomes_daily,
+    upsert_keyword_snapshot_daily,
+    upsert_negative_keyword_snapshot_daily,
     upsert_outcomes_batch,
     upsert_outcomes_daily,
 )
@@ -74,9 +94,14 @@ CONTROL_STATE_METRIC_FIELDS = [
     "campaign_name", "status", "advertising_channel_type", "advertising_channel_sub_type",
     "daily_budget_micros", "daily_budget_amount", "budget_delivery_method", "bidding_strategy_type",
     "target_cpa_micros", "target_cpa_amount", "target_roas",
-    "geo_target_ids", "network_settings_target_google_search", "network_settings_target_search_network",
+    "target_impression_share_location", "target_impression_share_location_fraction_micros",
+    "geo_target_ids", "geo_negative_ids", "geo_radius_json", "location_presence_interest_json",
+    "account_timezone", "device_modifiers_json",
+    "network_settings_target_google_search", "network_settings_target_search_network",
     "network_settings_target_content_network", "network_settings_target_partner_search_network",
     "ad_schedule_json", "audience_target_count",
+    "campaign_type", "networks", "campaign_start_date", "campaign_end_date",
+    "location", "active_bid_adj", "devices",
 ]
 
 # Max rows per MERGE in historical backfill to avoid timeouts
@@ -94,19 +119,27 @@ def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
         "daily_budget_micros": row.get("daily_budget_micros"), "daily_budget_amount": row.get("daily_budget_amount"),
         "budget_delivery_method": row.get("budget_delivery_method"), "bidding_strategy_type": row.get("bidding_strategy_type"),
         "target_cpa_micros": row.get("target_cpa_micros"), "target_cpa_amount": row.get("target_cpa_amount"), "target_roas": row.get("target_roas"),
-        "geo_target_ids": row.get("geo_target_ids"),
+        "target_impression_share_location": row.get("target_impression_share_location"),
+        "target_impression_share_location_fraction_micros": row.get("target_impression_share_location_fraction_micros"),
+        "geo_target_ids": row.get("geo_target_ids"), "geo_negative_ids": row.get("geo_negative_ids"),
+        "geo_radius_json": row.get("geo_radius_json"), "location_presence_interest_json": row.get("location_presence_interest_json"),
+        "account_timezone": row.get("account_timezone"), "device_modifiers_json": row.get("device_modifiers_json"),
         "network_settings_target_google_search": row.get("network_settings_target_google_search"),
         "network_settings_target_search_network": row.get("network_settings_target_search_network"),
         "network_settings_target_content_network": row.get("network_settings_target_content_network"),
         "network_settings_target_partner_search_network": row.get("network_settings_target_partner_search_network"),
         "ad_schedule_json": row.get("ad_schedule_json"),
         "audience_target_count": row.get("audience_target_count"),
+        "campaign_type": row.get("campaign_type"), "networks": row.get("networks"),
+        "campaign_start_date": row.get("campaign_start_date"),
+        "campaign_end_date": row.get("campaign_end_date"),
+        "location": row.get("location"), "active_bid_adj": row.get("active_bid_adj"), "devices": row.get("devices"),
     }
 
 
 def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Compare control state metrics day-over-day; return list for ppc_campaign_control_diff_daily.
-    Inserts a row for every (campaign, metric) every day, even when unchanged (old_value = new_value).
+    Only adds a row when the value has changed (old_value != new_value).
     """
     prior_by_cid = {r["campaign_id"]: r for r in prior}
     diffs = []
@@ -117,6 +150,10 @@ def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[
             continue
         for field in CONTROL_STATE_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
+            if ov is None and nv is None:
+                continue
+            if ov == nv:
+                continue
             diffs.append({
                 "campaign_id": cid,
                 "changed_metric_name": field,
@@ -278,12 +315,314 @@ def compute_ga4_acquisition_diffs(current: List[Dict[str, Any]], prior: List[Dic
     return diffs
 
 
+def _ad_group_snapshot_key(r: Dict[str, Any]) -> tuple:
+    return (r.get("campaign_id"), r.get("ad_group_id"))
+
+
+def compute_ad_group_changes(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """TIER 2: Compare ad group snapshots; return ADDED, REMOVED, STATUS_CHANGED, RENAMED, or UPDATED. One row per ad group per day (PK)."""
+    prior_by_key = {_ad_group_snapshot_key(r): r for r in prior}
+    cur_by_key = {_ad_group_snapshot_key(r): r for r in current}
+    changes = []
+    for r in current:
+        k = _ad_group_snapshot_key(r)
+        if k not in prior_by_key:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "change_type": "ADDED",
+                "ad_group_name": r.get("ad_group_name"),
+                "status": r.get("status"),
+                "old_value": None,
+                "new_value": r.get("ad_group_name"),
+            })
+    for r in prior:
+        k = _ad_group_snapshot_key(r)
+        if k not in cur_by_key:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "change_type": "REMOVED",
+                "ad_group_name": r.get("ad_group_name"),
+                "status": r.get("status"),
+                "old_value": r.get("ad_group_name"),
+                "new_value": None,
+            })
+    for r in current:
+        k = _ad_group_snapshot_key(r)
+        prev = prior_by_key.get(k)
+        if not prev:
+            continue
+        status_changed = (prev.get("status") or "") != (r.get("status") or "")
+        name_changed = (prev.get("ad_group_name") or "") != (r.get("ad_group_name") or "")
+        if status_changed and name_changed:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "change_type": "UPDATED",
+                "ad_group_name": r.get("ad_group_name"),
+                "status": r.get("status"),
+                "old_value": f"status={prev.get('status')}; name={prev.get('ad_group_name') or ''}",
+                "new_value": f"status={r.get('status')}; name={r.get('ad_group_name') or ''}",
+            })
+        elif status_changed:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "change_type": "STATUS_CHANGED",
+                "ad_group_name": r.get("ad_group_name"),
+                "status": r.get("status"),
+                "old_value": prev.get("status"),
+                "new_value": r.get("status"),
+            })
+        elif name_changed:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "change_type": "RENAMED",
+                "ad_group_name": r.get("ad_group_name"),
+                "status": r.get("status"),
+                "old_value": prev.get("ad_group_name"),
+                "new_value": r.get("ad_group_name"),
+            })
+    return changes
+
+
+def _keyword_snapshot_key(r: Dict[str, Any]) -> tuple:
+    return (r.get("campaign_id"), r.get("ad_group_id"), str(r.get("keyword_criterion_id", "")))
+
+
+def compute_keyword_changes(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """TIER 2: Compare keyword snapshots; return ADDED, REMOVED, MATCH_TYPE_CHANGED for ppc_keyword_change_daily."""
+    prior_by_key = {_keyword_snapshot_key(r): r for r in prior}
+    cur_by_key = {_keyword_snapshot_key(r): r for r in current}
+    changes = []
+    for r in current:
+        k = _keyword_snapshot_key(r)
+        if k not in prior_by_key:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "keyword_criterion_id": str(r.get("keyword_criterion_id", "")),
+                "change_type": "ADDED",
+                "keyword_text": r.get("keyword_text"),
+                "match_type": r.get("match_type"),
+                "old_value": None,
+                "new_value": r.get("match_type"),
+            })
+    for r in prior:
+        k = _keyword_snapshot_key(r)
+        if k not in cur_by_key:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "keyword_criterion_id": str(r.get("keyword_criterion_id", "")),
+                "change_type": "REMOVED",
+                "keyword_text": r.get("keyword_text"),
+                "match_type": r.get("match_type"),
+                "old_value": r.get("match_type"),
+                "new_value": None,
+            })
+    for r in current:
+        k = _keyword_snapshot_key(r)
+        prev = prior_by_key.get(k)
+        if prev and (prev.get("match_type") or "") != (r.get("match_type") or ""):
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "keyword_criterion_id": str(r.get("keyword_criterion_id", "")),
+                "change_type": "MATCH_TYPE_CHANGED",
+                "keyword_text": r.get("keyword_text"),
+                "match_type": r.get("match_type"),
+                "old_value": prev.get("match_type"),
+                "new_value": r.get("match_type"),
+            })
+    return changes
+
+
+def _neg_key_key(r: Dict[str, Any]) -> tuple:
+    return (r.get("campaign_id"), r.get("ad_group_id") or "", str(r.get("criterion_id", "")))
+
+
+def compute_negative_keyword_diffs(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """TIER 2: Compare negative keyword snapshots; return ADDED, REMOVED, or UPDATED (one row per criterion, PK)."""
+    prior_by_key = {_neg_key_key(r): r for r in prior}
+    cur_by_key = {_neg_key_key(r): r for r in current}
+    diffs = []
+    for r in current:
+        k = _neg_key_key(r)
+        if k not in prior_by_key:
+            diffs.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "ADDED",
+                "keyword_text": r.get("keyword_text"),
+                "match_type": r.get("match_type"),
+                "old_value": None,
+                "new_value": r.get("match_type"),
+            })
+    for r in prior:
+        k = _neg_key_key(r)
+        if k not in cur_by_key:
+            diffs.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "REMOVED",
+                "keyword_text": r.get("keyword_text"),
+                "match_type": r.get("match_type"),
+                "old_value": r.get("match_type"),
+                "new_value": None,
+            })
+    for r in current:
+        k = _neg_key_key(r)
+        prev = prior_by_key.get(k)
+        if not prev:
+            continue
+        mt_changed = (prev.get("match_type") or "") != (r.get("match_type") or "")
+        kt_changed = (prev.get("keyword_text") or "") != (r.get("keyword_text") or "")
+        if mt_changed or kt_changed:
+            change_type = "UPDATED" if (mt_changed and kt_changed) else ("MATCH_TYPE_CHANGED" if mt_changed else "KEYWORD_TEXT_CHANGED")
+            ov = prev.get("match_type") if mt_changed else prev.get("keyword_text")
+            nv = r.get("match_type") if mt_changed else r.get("keyword_text")
+            if mt_changed and kt_changed:
+                ov = f"match_type={prev.get('match_type')}; keyword_text={prev.get('keyword_text') or ''}"
+                nv = f"match_type={r.get('match_type')}; keyword_text={r.get('keyword_text') or ''}"
+            diffs.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": change_type,
+                "keyword_text": r.get("keyword_text"),
+                "match_type": r.get("match_type"),
+                "old_value": ov,
+                "new_value": nv,
+            })
+    return diffs
+
+
+def _audience_key(r: Dict[str, Any]) -> tuple:
+    return (r.get("campaign_id"), r.get("ad_group_id") or "", str(r.get("criterion_id", "")))
+
+
+def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """TIER 2: Compare audience targeting snapshots; return ADDED, REMOVED, MODE_CHANGED, BID_MODIFIER_CHANGED, or UPDATED. One row per criterion per day."""
+    prior_by_key = {_audience_key(r): r for r in prior}
+    cur_by_key = {_audience_key(r): r for r in current}
+    changes = []
+    for r in current:
+        k = _audience_key(r)
+        if k not in prior_by_key:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "ADDED",
+                "audience_type": r.get("audience_type"),
+                "audience_id": r.get("audience_id"),
+                "audience_name": r.get("audience_name"),
+                "targeting_mode": r.get("targeting_mode"),
+                "old_value": None,
+                "new_value": r.get("audience_id") or r.get("audience_type"),
+            })
+    for r in prior:
+        k = _audience_key(r)
+        if k not in cur_by_key:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "REMOVED",
+                "audience_type": r.get("audience_type"),
+                "audience_id": r.get("audience_id"),
+                "audience_name": r.get("audience_name"),
+                "targeting_mode": r.get("targeting_mode"),
+                "old_value": r.get("audience_id") or r.get("audience_type"),
+                "new_value": None,
+            })
+    for r in current:
+        k = _audience_key(r)
+        prev = prior_by_key.get(k)
+        if not prev:
+            continue
+        mode_changed = (prev.get("targeting_mode") or "") != (r.get("targeting_mode") or "")
+        bid_changed = prev.get("bid_modifier") != r.get("bid_modifier")
+        if mode_changed and bid_changed:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "UPDATED",
+                "audience_type": r.get("audience_type"),
+                "audience_id": r.get("audience_id"),
+                "audience_name": r.get("audience_name"),
+                "targeting_mode": r.get("targeting_mode"),
+                "old_value": f"mode={prev.get('targeting_mode')}; bid_modifier={prev.get('bid_modifier')}",
+                "new_value": f"mode={r.get('targeting_mode')}; bid_modifier={r.get('bid_modifier')}",
+            })
+        elif mode_changed:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "MODE_CHANGED",
+                "audience_type": r.get("audience_type"),
+                "audience_id": r.get("audience_id"),
+                "audience_name": r.get("audience_name"),
+                "targeting_mode": r.get("targeting_mode"),
+                "old_value": prev.get("targeting_mode"),
+                "new_value": r.get("targeting_mode"),
+            })
+        elif bid_changed:
+            changes.append({
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id") or "",
+                "criterion_id": str(r.get("criterion_id", "")),
+                "change_type": "BID_MODIFIER_CHANGED",
+                "audience_type": r.get("audience_type"),
+                "audience_id": r.get("audience_id"),
+                "audience_name": r.get("audience_name"),
+                "targeting_mode": r.get("targeting_mode"),
+                "old_value": str(prev.get("bid_modifier")) if prev.get("bid_modifier") is not None else None,
+                "new_value": str(r.get("bid_modifier")) if r.get("bid_modifier") is not None else None,
+            })
+    return changes
+
+
+def compute_ad_creative_diffs(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """TIER 2: Compare ad creative snapshots; return diff rows for ppc_ad_creative_diff_daily."""
+    prior_by_key = {(r.get("ad_group_id"), str(r.get("ad_id", ""))): r for r in prior}
+    diffs = []
+    for cur in current:
+        k = (cur.get("ad_group_id"), str(cur.get("ad_id", "")))
+        prev = prior_by_key.get(k)
+        if not prev:
+            continue
+        for field in ("headlines_json", "descriptions_json", "final_urls", "path1", "path2", "policy_summary_json", "status"):
+            ov, nv = prev.get(field), cur.get(field)
+            if ov is None and nv is None:
+                continue
+            if ov != nv:
+                diffs.append({
+                    "ad_group_id": cur.get("ad_group_id"),
+                    "ad_id": str(cur.get("ad_id", "")),
+                    "changed_metric_name": field,
+                    "old_value": str(ov)[:65535] if ov is not None else None,
+                    "new_value": str(nv)[:65535] if nv is not None else None,
+                })
+    return diffs
+
+
 def run_sync(
     snapshot_date: date,
     projects: List[str],
     run_ga4: bool = False,
     google_ads_filters: Optional[Dict[str, Any]] = None,
     control_state_only: bool = False,
+    control_state_keyword_only: bool = False,
+    control_state_adgroup_only: bool = False,
+    control_state_adcreative_only: bool = False,
 ) -> None:
     snapshot_str = snapshot_date.isoformat()
     prior_date = snapshot_date - timedelta(days=1)
@@ -292,8 +631,78 @@ def run_sync(
     with get_connection() as conn:
         for project in projects:
             customer_id = normalize_customer_id(get_google_ads_customer_id(project))
-            logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, " (control state only)" if control_state_only else "")
+            mode_suffix = (
+                " (control state only)" if control_state_only
+                else " (control state keyword only)" if control_state_keyword_only
+                else " (control state ad group only)" if control_state_adgroup_only
+                else " (ad creative only)" if control_state_adcreative_only
+                else ""
+            )
+            logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, mode_suffix)
             try:
+                if control_state_adcreative_only:
+                    # Only ad creative (RSA) snapshot + diff
+                    rsa_ads = fetch_ad_creative_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    if rsa_ads:
+                        creative_rows = [
+                            {
+                                "ad_group_id": r["ad_group_id"],
+                                "campaign_id": r["campaign_id"],
+                                "ad_id": r["ad_id"],
+                                "ad_type": r.get("ad_type"),
+                                "status": r.get("status"),
+                                "headlines_json": r.get("headlines_json"),
+                                "descriptions_json": r.get("descriptions_json"),
+                                "final_urls": r.get("final_urls"),
+                                "path1": r.get("path1"),
+                                "path2": r.get("path2"),
+                                "policy_summary_json": r.get("policy_summary_json"),
+                            }
+                            for r in rsa_ads
+                        ]
+                        upsert_ad_creative_snapshot_daily(snapshot_date, customer_id, creative_rows, conn=conn)
+                        prior_creative = get_ad_creative_snapshot_for_date(customer_id, prior_date, conn=conn)
+                        if prior_creative:
+                            creative_diffs = compute_ad_creative_diffs(prior_creative, creative_rows)
+                            if creative_diffs:
+                                insert_ad_creative_diff_daily(snapshot_date, customer_id, creative_diffs, conn=conn)
+                    continue
+
+                if control_state_adgroup_only:
+                    # Only ad group snapshot + change
+                    ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    if ad_group_struct:
+                        ag_snapshot_rows = [{"ad_group_id": r["ad_group_id"], "campaign_id": r["campaign_id"], "ad_group_name": r["ad_group_name"], "status": r["status"]} for r in ad_group_struct]
+                        upsert_ad_group_snapshot_daily(snapshot_date, customer_id, ag_snapshot_rows, conn=conn)
+                        prior_ag_snap = get_ad_group_snapshot_for_date(customer_id, prior_date, conn=conn)
+                        if prior_ag_snap:
+                            ag_changes = compute_ad_group_changes(prior_ag_snap, ag_snapshot_rows)
+                            if ag_changes:
+                                insert_ad_group_change_daily(snapshot_date, customer_id, ag_changes, conn=conn)
+                    continue
+
+                if control_state_keyword_only:
+                    # Only keyword snapshot + change and negative keyword snapshot + diff
+                    kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    if kw_criteria:
+                        snapshot_rows = [dict(r) for r in kw_criteria]
+                        upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
+                        prior_kw_snap = get_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
+                        if prior_kw_snap:
+                            kw_changes = compute_keyword_changes(prior_kw_snap, snapshot_rows)
+                            if kw_changes:
+                                insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
+                    neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    if neg_kw:
+                        neg_rows = [dict(r) for r in neg_kw]
+                        upsert_negative_keyword_snapshot_daily(snapshot_date, customer_id, neg_rows, conn=conn)
+                        prior_neg = get_negative_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
+                        if prior_neg:
+                            neg_diffs = compute_negative_keyword_diffs(prior_neg, neg_rows)
+                            if neg_diffs:
+                                insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
+                    continue
+
                 control_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
                 if not control_rows:
                     logger.warning("No control state rows for project=%s", project)
@@ -306,6 +715,76 @@ def run_sync(
                         control_diff_list = compute_control_state_diffs(state_for_storage, prior_control)
                         if control_diff_list:
                             insert_control_diff_daily(snapshot_date, customer_id, control_diff_list, conn=conn)
+
+                # TIER 2: ad group snapshot / change (status, add/remove, rename)
+                ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
+                if ad_group_struct:
+                    ag_snapshot_rows = [{"ad_group_id": r["ad_group_id"], "campaign_id": r["campaign_id"], "ad_group_name": r["ad_group_name"], "status": r["status"]} for r in ad_group_struct]
+                    upsert_ad_group_snapshot_daily(snapshot_date, customer_id, ag_snapshot_rows, conn=conn)
+                    prior_ag_snap = get_ad_group_snapshot_for_date(customer_id, prior_date, conn=conn)
+                    if prior_ag_snap:
+                        ag_changes = compute_ad_group_changes(prior_ag_snap, ag_snapshot_rows)
+                        if ag_changes:
+                            insert_ad_group_change_daily(snapshot_date, customer_id, ag_changes, conn=conn)
+
+                # TIER 2: keyword snapshot / change (pass full row so keyword_level, campaign_name, ad_group_name are stored)
+                kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
+                if kw_criteria:
+                    snapshot_rows = [dict(r) for r in kw_criteria]
+                    upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
+                    prior_kw_snap = get_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
+                    if prior_kw_snap:
+                        kw_changes = compute_keyword_changes(prior_kw_snap, snapshot_rows)
+                        if kw_changes:
+                            insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
+
+                # TIER 2: negative keyword snapshot / diff (pass full row so ad_group_id, keyword_level, campaign_name, ad_group_name are stored)
+                neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
+                if neg_kw:
+                    neg_rows = [dict(r) for r in neg_kw]
+                    upsert_negative_keyword_snapshot_daily(snapshot_date, customer_id, neg_rows, conn=conn)
+                    prior_neg = get_negative_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
+                    if prior_neg:
+                        neg_diffs = compute_negative_keyword_diffs(prior_neg, neg_rows)
+                        if neg_diffs:
+                            insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
+
+                # TIER 2: ad creative (RSA) snapshot / diff
+                rsa_ads = fetch_ad_creative_snapshot(project=project, google_ads_filters=google_ads_filters)
+                if rsa_ads:
+                    creative_rows = [
+                        {
+                            "ad_group_id": r["ad_group_id"],
+                            "campaign_id": r["campaign_id"],
+                            "ad_id": r["ad_id"],
+                            "ad_type": r.get("ad_type"),
+                            "status": r.get("status"),
+                            "headlines_json": r.get("headlines_json"),
+                            "descriptions_json": r.get("descriptions_json"),
+                            "final_urls": r.get("final_urls"),
+                            "path1": r.get("path1"),
+                            "path2": r.get("path2"),
+                            "policy_summary_json": r.get("policy_summary_json"),
+                        }
+                        for r in rsa_ads
+                    ]
+                    upsert_ad_creative_snapshot_daily(snapshot_date, customer_id, creative_rows, conn=conn)
+                    prior_creative = get_ad_creative_snapshot_for_date(customer_id, prior_date, conn=conn)
+                    if prior_creative:
+                        creative_diffs = compute_ad_creative_diffs(prior_creative, creative_rows)
+                        if creative_diffs:
+                            insert_ad_creative_diff_daily(snapshot_date, customer_id, creative_diffs, conn=conn)
+
+                # TIER 2: audience targeting snapshot / diff (in-market, custom intent, remarketing)
+                audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
+                if audience_rows:
+                    aud_snapshot = [{"campaign_id": r["campaign_id"], "ad_group_id": r.get("ad_group_id") or "", "criterion_id": r["criterion_id"], "audience_type": r["audience_type"], "audience_id": r.get("audience_id"), "audience_name": r.get("audience_name"), "targeting_mode": r.get("targeting_mode"), "bid_modifier": r.get("bid_modifier"), "negative": r.get("negative")} for r in audience_rows]
+                    upsert_audience_targeting_snapshot_daily(snapshot_date, customer_id, aud_snapshot, conn=conn)
+                    prior_aud = get_audience_targeting_snapshot_for_date(customer_id, prior_date, conn=conn)
+                    if prior_aud:
+                        aud_changes = compute_audience_targeting_changes(prior_aud, aud_snapshot)
+                        if aud_changes:
+                            insert_audience_targeting_diff_daily(snapshot_date, customer_id, aud_changes, conn=conn)
 
                 if control_state_only:
                     continue
@@ -346,7 +825,7 @@ def run_sync(
                 logger.exception("PPC Flight Recorder sync failed for project=%s: %s", project, e)
                 raise
 
-        if control_state_only:
+        if control_state_only or control_state_adcreative_only:
             return
 
         if run_ga4:
@@ -573,6 +1052,9 @@ def main() -> None:
     parser.add_argument("--no-diffs", action="store_true", default=True, help="Skip diff computation in historical (default: True)")
     parser.add_argument("--diffs", action="store_false", dest="no_diffs", help="Compute outcome/GA4 diffs during historical backfill")
     parser.add_argument("--control-state-only", action="store_true", help="Update only ppc_campaign_control_state_daily and ppc_campaign_control_diff_daily (no outcomes, no GA4)")
+    parser.add_argument("--control-state-keyword-only", action="store_true", help="Update only keyword and negative keyword snapshots and diffs (ppc_keyword_snapshot_daily, ppc_keyword_change_daily, ppc_negative_keyword_snapshot_daily, ppc_negative_keyword_diff_daily)")
+    parser.add_argument("--control-state-adgroup-only", action="store_true", help="Update only ad group snapshot and diff (ppc_ad_group_snapshot_daily, ppc_ad_group_change_daily)")
+    parser.add_argument("--control-state-adcreative-only", action="store_true", help="Update only ad creative (RSA) snapshot and diff (ppc_ad_creative_snapshot_daily, ppc_ad_creative_diff_daily)")
     args = parser.parse_args()
 
     projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
@@ -608,6 +1090,9 @@ def main() -> None:
         projects=projects,
         run_ga4=args.ga4,
         control_state_only=args.control_state_only,
+        control_state_keyword_only=args.control_state_keyword_only,
+        control_state_adgroup_only=args.control_state_adgroup_only,
+        control_state_adcreative_only=args.control_state_adcreative_only,
     )
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 

@@ -164,13 +164,15 @@ def schedule():
 class SyncRequest(BaseModel):
     date: Optional[str] = None  # YYYY-MM-DD; default yesterday
     control_state_only: Optional[bool] = False  # If true, update only control_state_daily and control_diff_daily
+    control_state_keyword_only: Optional[bool] = False  # If true, update only keyword and negative keyword snapshots/diffs
+    control_state_adgroup_only: Optional[bool] = False  # If true, update only ad group snapshot and diff
 
 
 @app.post("/sync")
 def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     """
-    Run sync once (same as daily job: GA4 + diffs), or control-state-only.
-    Optional body: {"date": "YYYY-MM-DD", "control_state_only": true}.
+    Run sync once (same as daily job: GA4 + diffs), or control-state-only, or control-state-keyword-only, or control-state-adgroup-only.
+    Optional body: {"date": "YYYY-MM-DD", "control_state_only": true} or {"control_state_keyword_only": true} or {"control_state_adgroup_only": true}.
     """
     from sync import run_sync
 
@@ -183,19 +185,25 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
         snapshot_date = date.today() - timedelta(days=1)
 
     control_state_only = bool(body and body.control_state_only)
+    control_state_keyword_only = bool(body and body.control_state_keyword_only)
+    control_state_adgroup_only = bool(body and body.control_state_adgroup_only)
     projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
     try:
         run_sync(
             snapshot_date=snapshot_date,
             projects=projects,
-            run_ga4=not control_state_only,
+            run_ga4=not (control_state_only or control_state_keyword_only or control_state_adgroup_only),
             control_state_only=control_state_only,
+            control_state_keyword_only=control_state_keyword_only,
+            control_state_adgroup_only=control_state_adgroup_only,
         )
         return {
             "status": "ok",
             "snapshot_date": snapshot_date.isoformat(),
             "projects": projects,
             "control_state_only": control_state_only,
+            "control_state_keyword_only": control_state_keyword_only,
+            "control_state_adgroup_only": control_state_adgroup_only,
         }
     except Exception as e:
         logger.exception("Manual sync failed: %s", e)
