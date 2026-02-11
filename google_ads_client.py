@@ -1127,16 +1127,68 @@ def fetch_negative_keywords_snapshot(
     return rows_out
 
 
+def _fetch_ad_asset_urls_map(
+    customer_id_clean: str,
+    ga_service: Any,
+    google_ads_filters: Optional[Dict[str, Any]] = None,
+) -> Dict[tuple, List[str]]:
+    """Fetch (ad_group_id, ad_id) -> list of asset URLs/references via ad_group_ad_asset_view + asset.
+    YouTube videos become watch URLs; other assets (image, text, etc.) use resource_name as reference.
+    """
+    from collections import defaultdict
+    # ad_group_id, ad_id -> list of URLs or asset resource names
+    map_out: Dict[tuple, List[str]] = defaultdict(list)
+    query = """
+        SELECT ad_group.id, ad_group_ad.ad.id, asset.id, asset.resource_name, asset.type,
+               asset.youtube_video_asset.youtube_video_id
+        FROM ad_group_ad_asset_view
+        WHERE ad_group_ad_asset_view.enabled = true
+    """
+    try:
+        stream = ga_service.search_stream(customer_id=customer_id_clean, query=query)
+        for batch in stream:
+            for row in batch.results:
+                ad_grp = getattr(row, "ad_group", None)
+                ad = getattr(row, "ad_group_ad", None)
+                asset = getattr(row, "asset", None)
+                if not ad_grp or not ad or not asset:
+                    continue
+                ad_group_id = str(ad_grp.id)
+                ad_id = str(ad.ad.id) if getattr(ad, "ad", None) else None
+                if not ad_id:
+                    continue
+                asset_type = getattr(asset, "type", None)
+                type_name = asset_type.name if asset_type and hasattr(asset_type, "name") else str(asset_type) if asset_type else None
+                url_or_ref: Optional[str] = None
+                if type_name == "YOUTUBE_VIDEO":
+                    yt_id = getattr(getattr(asset, "youtube_video_asset", None), "youtube_video_id", None)
+                    if yt_id:
+                        url_or_ref = "https://www.youtube.com/watch?v=" + str(yt_id).strip()
+                if not url_or_ref:
+                    res_name = getattr(asset, "resource_name", None)
+                    if res_name:
+                        url_or_ref = str(res_name).strip()
+                if url_or_ref:
+                    map_out[(ad_group_id, ad_id)].append(url_or_ref)
+    except GoogleAdsException as ex:
+        logger.warning("ad_group_ad_asset_view query failed (asset_urls will be empty): %s", ex)
+    return dict(map_out)
+
+
 def fetch_ad_creative_snapshot(
     project: str,
     google_ads_filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch all ad types (RSA, ETA, call, app, etc.) creative snapshot. TIER 2."""
+    """Fetch all ad types (RSA, ETA, call, app, etc.) creative snapshot. TIER 2.
+    Includes asset_urls for any ad that has linked assets (image, video, text, etc.) via ad_group_ad_asset_view.
+    """
     import json as _json
 
     client = get_client()
     customer_id_clean = _customer_id_clean(project)
     ga_service = client.get_service("GoogleAdsService")
+    # Fetch asset URLs/references per ad first (ad_group_id, ad_id) -> [urls]
+    asset_urls_by_ad = _fetch_ad_asset_urls_map(customer_id_clean, ga_service, google_ads_filters)
     query = """
         SELECT ad_group.id, campaign.id, campaign.name, ad_group_ad.status,
                ad_group_ad.ad.id, ad_group_ad.ad.type,
@@ -1221,6 +1273,10 @@ def fetch_ad_creative_snapshot(
                         "review_status": getattr(policy_summary, "review_status", None) and getattr(policy_summary.review_status, "name", None),
                         "policy_topic_entries": entries,
                     })
+                # Asset URLs: from ad_group_ad_asset_view (all asset types: image, video, text, etc.)
+                ad_key = (str(ad_grp.id), str(ad.ad.id))
+                asset_urls_list: List[str] = list(asset_urls_by_ad.get(ad_key, []))
+                asset_urls_json = _json.dumps(asset_urls_list) if asset_urls_list else None
                 rows_out.append({
                     "ad_group_id": str(ad_grp.id),
                     "campaign_id": campaign_id,
@@ -1233,6 +1289,7 @@ def fetch_ad_creative_snapshot(
                     "path1": str(path1)[:512] if path1 else None,
                     "path2": str(path2)[:512] if path2 else None,
                     "policy_summary_json": (policy_summary_json or "")[:65535] if policy_summary_json else None,
+                    "asset_urls": (asset_urls_json or "")[:65535] if asset_urls_json else None,
                 })
         logger.info("fetch_ad_creative_snapshot: %s ads (all types) for project %s", len(rows_out), project)
     except GoogleAdsException as ex:

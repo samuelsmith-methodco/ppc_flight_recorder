@@ -599,7 +599,7 @@ def compute_ad_creative_diffs(prior: List[Dict[str, Any]], current: List[Dict[st
         prev = prior_by_key.get(k)
         if not prev:
             continue
-        for field in ("headlines_json", "descriptions_json", "final_urls", "path1", "path2", "policy_summary_json", "status"):
+        for field in ("headlines_json", "descriptions_json", "final_urls", "path1", "path2", "policy_summary_json", "status", "asset_urls"):
             ov, nv = prev.get(field), cur.get(field)
             if ov is None and nv is None:
                 continue
@@ -657,6 +657,7 @@ def run_sync(
                                 "path1": r.get("path1"),
                                 "path2": r.get("path2"),
                                 "policy_summary_json": r.get("policy_summary_json"),
+                                "asset_urls": r.get("asset_urls"),
                             }
                             for r in rsa_ads
                         ]
@@ -765,6 +766,7 @@ def run_sync(
                             "path1": r.get("path1"),
                             "path2": r.get("path2"),
                             "policy_summary_json": r.get("policy_summary_json"),
+                            "asset_urls": r.get("asset_urls"),
                         }
                         for r in rsa_ads
                     ]

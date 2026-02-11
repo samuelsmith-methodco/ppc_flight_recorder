@@ -1139,17 +1139,18 @@ def upsert_ad_creative_snapshot_daily(
             params[prefix + "path1"] = _safe_str(r.get("path1"), 512)
             params[prefix + "path2"] = _safe_str(r.get("path2"), 512)
             params[prefix + "policy_summary_json"] = _safe_str(r.get("policy_summary_json"), 65535)
+            params[prefix + "asset_urls"] = _safe_str(r.get("asset_urls"), 65535)
             values_parts.append(
-                f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_id)s, %(r{i}_ad_type)s, %(r{i}_status)s, %(r{i}_headlines_json)s, %(r{i}_descriptions_json)s, %(r{i}_final_urls)s, %(r{i}_path1)s, %(r{i}_path2)s, %(r{i}_policy_summary_json)s)"
+                f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_id)s, %(r{i}_ad_type)s, %(r{i}_status)s, %(r{i}_headlines_json)s, %(r{i}_descriptions_json)s, %(r{i}_final_urls)s, %(r{i}_path1)s, %(r{i}_path2)s, %(r{i}_policy_summary_json)s, %(r{i}_asset_urls)s)"
             )
         values_sql = ",\n                ".join(values_parts)
         merge_sql = f"""
             MERGE INTO {tbl} AS target
-            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json)) AS source
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json, asset_urls)) AS source
             ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.ad_group_id = source.ad_group_id AND target.ad_id = source.ad_id
-            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, ad_type = source.ad_type, status = source.status, headlines_json = source.headlines_json, descriptions_json = source.descriptions_json, final_urls = source.final_urls, path1 = source.path1, path2 = source.path2, policy_summary_json = source.policy_summary_json
-            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json)
-            VALUES (source.snapshot_date, source.customer_id, source.ad_group_id, source.campaign_id, source.ad_id, source.ad_type, source.status, source.headlines_json, source.descriptions_json, source.final_urls, source.path1, source.path2, source.policy_summary_json)
+            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, ad_type = source.ad_type, status = source.status, headlines_json = source.headlines_json, descriptions_json = source.descriptions_json, final_urls = source.final_urls, path1 = source.path1, path2 = source.path2, policy_summary_json = source.policy_summary_json, asset_urls = source.asset_urls
+            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json, asset_urls)
+            VALUES (source.snapshot_date, source.customer_id, source.ad_group_id, source.campaign_id, source.ad_id, source.ad_type, source.status, source.headlines_json, source.descriptions_json, source.final_urls, source.path1, source.path2, source.policy_summary_json, source.asset_urls)
         """
         execute(conn, merge_sql, params)
         conn.commit()
@@ -1163,7 +1164,7 @@ def get_ad_creative_snapshot_for_date(customer_id: str, snapshot_date: date, con
     tbl = _table("ppc_ad_creative_snapshot_daily")
 
     def do(conn):
-        q = f"SELECT ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        q = f"SELECT ad_group_id, campaign_id, ad_id, ad_type, status, headlines_json, descriptions_json, final_urls, path1, path2, policy_summary_json, asset_urls FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
         return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
 
     df = _run_with_conn(conn, do)

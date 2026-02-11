@@ -404,6 +404,7 @@ CREATE TABLE IF NOT EXISTS ppc_negative_keyword_diff_daily (
 --   descriptions_json: JSON array of {text, pinned_field} for each description (RSA/ETA).
 --   path1, path2: Display path (e.g. example.com/Path1/Path2); RSA only.
 --   policy_summary_json: JSON with approval_status, review_status, policy_topic_entries. Set when ad has policy issues; helps track disapprovals.
+--   asset_urls: JSON array of URLs for asset-based ads (IMAGE_AD image URL, VIDEO_AD YouTube watch URL, etc.). NULL for text-only ad types.
 CREATE TABLE IF NOT EXISTS ppc_ad_creative_snapshot_daily (
     snapshot_date DATE NOT NULL,
     customer_id VARCHAR(128) NOT NULL,
@@ -418,11 +419,15 @@ CREATE TABLE IF NOT EXISTS ppc_ad_creative_snapshot_daily (
     path1 VARCHAR(512),
     path2 VARCHAR(512),
     policy_summary_json VARCHAR(65535),
+    asset_urls VARCHAR(65535),
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (snapshot_date, customer_id, ad_group_id, ad_id)
 );
 
--- ppc_ad_creative_diff_daily: RSA creative changes. changed_metric_name: headlines_json | descriptions_json | final_urls | path1 | path2 | policy_summary_json | status.
+-- Add asset_urls to existing tables (run once if table was created before this column existed):
+-- ALTER TABLE ppc_ad_creative_snapshot_daily ADD COLUMN asset_urls VARCHAR(65535);
+
+-- ppc_ad_creative_diff_daily: Ad creative changes. changed_metric_name: headlines_json | descriptions_json | final_urls | path1 | path2 | policy_summary_json | status | asset_urls.
 CREATE TABLE IF NOT EXISTS ppc_ad_creative_diff_daily (
     snapshot_date DATE NOT NULL,
     customer_id VARCHAR(128) NOT NULL,
