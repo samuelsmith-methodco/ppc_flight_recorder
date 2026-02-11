@@ -89,6 +89,9 @@ python sync.py --date 2026-02-10 --control-state-adgroup-only
 
 # Ad creative (all ad types) snapshot and diff only (ppc_ad_creative_snapshot_daily, ppc_ad_creative_diff_daily)
 python sync.py --date 2026-02-10 --control-state-adcreative-only
+
+# Audience targeting snapshot and diff only (ppc_audience_targeting_snapshot_daily, ppc_audience_targeting_diff_daily)
+python sync.py --date 2026-02-10 --control-state-audience-only
 ```
 
 ### CLI reference (sync.py)
@@ -106,6 +109,7 @@ python sync.py --date 2026-02-10 --control-state-adcreative-only
 | `--control-state-keyword-only` | Only keyword and negative keyword snapshot/diff tables |
 | `--control-state-adgroup-only` | Only ad group snapshot and change tables |
 | `--control-state-adcreative-only` | Only ad creative snapshot and diff tables |
+| `--control-state-audience-only` | Only audience targeting snapshot and diff tables |
 
 Cron example (daily at 2 AM with GA4):
 

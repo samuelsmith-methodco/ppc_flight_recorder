@@ -442,8 +442,11 @@ CREATE TABLE IF NOT EXISTS ppc_ad_creative_diff_daily (
 
 -- ppc_audience_targeting_snapshot_daily: Audience criteria (campaign and ad group level).
 --   audience_type: USER_LIST (remarketing) | USER_INTEREST (in-market) | CUSTOM_AFFINITY | CUSTOM_INTENT | COMBINED_AUDIENCE.
---   ad_group_id: Empty string '' for campaign-level audiences.
---   targeting_mode: OBSERVATION vs TARGETING; may be NULL if not determinable from API.
+--   ad_group_id: Empty string '' for campaign-level audiences (never NULL in app; normalize on read).
+--   audience_name: From API (user_list.name, etc.) when available.
+--   targeting_mode: OBSERVATION (bid_only=true) vs TARGETING (bid_only=false) from criterion.targeting_setting.
+--   audience_size: User count / estimated size at snapshot time (e.g. user_list.size_for_display); NULL if not available.
+--   status: Criterion status (e.g. ENABLED, REMOVED). All criteria are fetched (including REMOVED).
 --   bid_modifier: Bid adjustment for this audience. negative: TRUE if exclusion.
 CREATE TABLE IF NOT EXISTS ppc_audience_targeting_snapshot_daily (
     snapshot_date DATE NOT NULL,
@@ -455,13 +458,19 @@ CREATE TABLE IF NOT EXISTS ppc_audience_targeting_snapshot_daily (
     audience_id VARCHAR(256),
     audience_name VARCHAR(512),
     targeting_mode VARCHAR(32),
+    audience_size NUMBER(18, 0),
+    status VARCHAR(32),
     bid_modifier NUMBER(6, 4),
     negative BOOLEAN,
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id)
 );
 
+-- Add audience_size to existing tables (run once if table was created before): ALTER TABLE ppc_audience_targeting_snapshot_daily ADD COLUMN audience_size NUMBER(18, 0);
+-- Add status to existing tables (run once if table was created before): ALTER TABLE ppc_audience_targeting_snapshot_daily ADD COLUMN status VARCHAR(32);
+
 -- ppc_audience_targeting_diff_daily: Audience targeting changes. change_type: ADDED | REMOVED | MODE_CHANGED | BID_MODIFIER_CHANGED | UPDATED.
+--   old_size, new_size: Audience size at time of change (for size-at-change tracking).
 CREATE TABLE IF NOT EXISTS ppc_audience_targeting_diff_daily (
     snapshot_date DATE NOT NULL,
     customer_id VARCHAR(128) NOT NULL,
@@ -475,9 +484,13 @@ CREATE TABLE IF NOT EXISTS ppc_audience_targeting_diff_daily (
     targeting_mode VARCHAR(32),
     old_value VARCHAR(65535),
     new_value VARCHAR(65535),
+    old_size NUMBER(18, 0),
+    new_size NUMBER(18, 0),
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id)
 );
+
+-- Add old_size, new_size to existing diff table (run once if needed): ALTER TABLE ppc_audience_targeting_diff_daily ADD COLUMN old_size NUMBER(18, 0), ADD COLUMN new_size NUMBER(18, 0);
 
 -- ppc_campaign_dims: Campaign dimension lookup. Resolves campaign_id to name, status, channel. last_seen_date: when last updated.
 CREATE TABLE IF NOT EXISTS ppc_campaign_dims (

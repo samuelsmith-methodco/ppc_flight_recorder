@@ -525,6 +525,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "targeting_mode": r.get("targeting_mode"),
                 "old_value": None,
                 "new_value": r.get("audience_id") or r.get("audience_type"),
+                "old_size": None,
+                "new_size": r.get("audience_size"),
             })
     for r in prior:
         k = _audience_key(r)
@@ -540,6 +542,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "targeting_mode": r.get("targeting_mode"),
                 "old_value": r.get("audience_id") or r.get("audience_type"),
                 "new_value": None,
+                "old_size": r.get("audience_size"),
+                "new_size": None,
             })
     for r in current:
         k = _audience_key(r)
@@ -548,6 +552,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
             continue
         mode_changed = (prev.get("targeting_mode") or "") != (r.get("targeting_mode") or "")
         bid_changed = prev.get("bid_modifier") != r.get("bid_modifier")
+        def _size(rec: Dict[str, Any]) -> Optional[Any]:
+            return rec.get("audience_size")
         if mode_changed and bid_changed:
             changes.append({
                 "campaign_id": r.get("campaign_id"),
@@ -560,6 +566,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "targeting_mode": r.get("targeting_mode"),
                 "old_value": f"mode={prev.get('targeting_mode')}; bid_modifier={prev.get('bid_modifier')}",
                 "new_value": f"mode={r.get('targeting_mode')}; bid_modifier={r.get('bid_modifier')}",
+                "old_size": _size(prev),
+                "new_size": _size(r),
             })
         elif mode_changed:
             changes.append({
@@ -573,6 +581,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "targeting_mode": r.get("targeting_mode"),
                 "old_value": prev.get("targeting_mode"),
                 "new_value": r.get("targeting_mode"),
+                "old_size": _size(prev),
+                "new_size": _size(r),
             })
         elif bid_changed:
             changes.append({
@@ -586,6 +596,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "targeting_mode": r.get("targeting_mode"),
                 "old_value": str(prev.get("bid_modifier")) if prev.get("bid_modifier") is not None else None,
                 "new_value": str(r.get("bid_modifier")) if r.get("bid_modifier") is not None else None,
+                "old_size": _size(prev),
+                "new_size": _size(r),
             })
     return changes
 
@@ -623,6 +635,7 @@ def run_sync(
     control_state_keyword_only: bool = False,
     control_state_adgroup_only: bool = False,
     control_state_adcreative_only: bool = False,
+    control_state_audience_only: bool = False,
 ) -> None:
     snapshot_str = snapshot_date.isoformat()
     prior_date = snapshot_date - timedelta(days=1)
@@ -636,6 +649,7 @@ def run_sync(
                 else " (control state keyword only)" if control_state_keyword_only
                 else " (control state ad group only)" if control_state_adgroup_only
                 else " (ad creative only)" if control_state_adcreative_only
+                else " (audience only)" if control_state_audience_only
                 else ""
             )
             logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, mode_suffix)
@@ -667,6 +681,34 @@ def run_sync(
                             creative_diffs = compute_ad_creative_diffs(prior_creative, creative_rows)
                             if creative_diffs:
                                 insert_ad_creative_diff_daily(snapshot_date, customer_id, creative_diffs, conn=conn)
+                    continue
+
+                if control_state_audience_only:
+                    # Only audience targeting snapshot + diff
+                    audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    if audience_rows:
+                        aud_snapshot = [
+                            {
+                                "campaign_id": r["campaign_id"],
+                                "ad_group_id": r.get("ad_group_id") or "",
+                                "criterion_id": r["criterion_id"],
+                                "audience_type": r["audience_type"],
+                                "audience_id": r.get("audience_id"),
+                                "audience_name": r.get("audience_name"),
+                                "targeting_mode": r.get("targeting_mode"),
+                                "audience_size": r.get("audience_size"),
+                                "status": r.get("status"),
+                                "bid_modifier": r.get("bid_modifier"),
+                                "negative": r.get("negative"),
+                            }
+                            for r in audience_rows
+                        ]
+                        upsert_audience_targeting_snapshot_daily(snapshot_date, customer_id, aud_snapshot, conn=conn)
+                        prior_aud = get_audience_targeting_snapshot_for_date(customer_id, prior_date, conn=conn)
+                        if prior_aud:
+                            aud_changes = compute_audience_targeting_changes(prior_aud, aud_snapshot)
+                            if aud_changes:
+                                insert_audience_targeting_diff_daily(snapshot_date, customer_id, aud_changes, conn=conn)
                     continue
 
                 if control_state_adgroup_only:
@@ -780,7 +822,7 @@ def run_sync(
                 # TIER 2: audience targeting snapshot / diff (in-market, custom intent, remarketing)
                 audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
                 if audience_rows:
-                    aud_snapshot = [{"campaign_id": r["campaign_id"], "ad_group_id": r.get("ad_group_id") or "", "criterion_id": r["criterion_id"], "audience_type": r["audience_type"], "audience_id": r.get("audience_id"), "audience_name": r.get("audience_name"), "targeting_mode": r.get("targeting_mode"), "bid_modifier": r.get("bid_modifier"), "negative": r.get("negative")} for r in audience_rows]
+                    aud_snapshot = [{"campaign_id": r["campaign_id"], "ad_group_id": r.get("ad_group_id") or "", "criterion_id": r["criterion_id"], "audience_type": r["audience_type"], "audience_id": r.get("audience_id"), "audience_name": r.get("audience_name"), "targeting_mode": r.get("targeting_mode"), "audience_size": r.get("audience_size"), "status": r.get("status"), "bid_modifier": r.get("bid_modifier"), "negative": r.get("negative")} for r in audience_rows]
                     upsert_audience_targeting_snapshot_daily(snapshot_date, customer_id, aud_snapshot, conn=conn)
                     prior_aud = get_audience_targeting_snapshot_for_date(customer_id, prior_date, conn=conn)
                     if prior_aud:
@@ -827,7 +869,7 @@ def run_sync(
                 logger.exception("PPC Flight Recorder sync failed for project=%s: %s", project, e)
                 raise
 
-        if control_state_only or control_state_adcreative_only:
+        if control_state_only or control_state_adcreative_only or control_state_audience_only:
             return
 
         if run_ga4:
@@ -1057,6 +1099,7 @@ def main() -> None:
     parser.add_argument("--control-state-keyword-only", action="store_true", help="Update only keyword and negative keyword snapshots and diffs (ppc_keyword_snapshot_daily, ppc_keyword_change_daily, ppc_negative_keyword_snapshot_daily, ppc_negative_keyword_diff_daily)")
     parser.add_argument("--control-state-adgroup-only", action="store_true", help="Update only ad group snapshot and diff (ppc_ad_group_snapshot_daily, ppc_ad_group_change_daily)")
     parser.add_argument("--control-state-adcreative-only", action="store_true", help="Update only ad creative (RSA) snapshot and diff (ppc_ad_creative_snapshot_daily, ppc_ad_creative_diff_daily)")
+    parser.add_argument("--control-state-audience-only", action="store_true", help="Update only audience targeting snapshot and diff (ppc_audience_targeting_snapshot_daily, ppc_audience_targeting_diff_daily)")
     args = parser.parse_args()
 
     projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
@@ -1095,6 +1138,7 @@ def main() -> None:
         control_state_keyword_only=args.control_state_keyword_only,
         control_state_adgroup_only=args.control_state_adgroup_only,
         control_state_adcreative_only=args.control_state_adcreative_only,
+        control_state_audience_only=args.control_state_audience_only,
     )
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 

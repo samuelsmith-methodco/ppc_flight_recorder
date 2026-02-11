@@ -1347,7 +1347,7 @@ def fetch_audience_targeting_snapshot(
     audience_types = ("USER_LIST", "USER_INTEREST", "CUSTOM_AFFINITY", "CUSTOM_INTENT", "COMBINED_AUDIENCE", "CUSTOM_AUDIENCE")
     rows_out: List[Dict[str, Any]] = []
 
-    def process_criterion(c, camp, ad_group_id: str, campaign_id: str, camp_name: str) -> None:
+    def process_criterion(c, camp, ad_group_id: str, campaign_id: str, camp_name: str, row: Any = None, ad_group: Any = None) -> None:
         if google_ads_filters and google_ads_filters.get("campaignNamePatterns"):
             patterns = google_ads_filters.get("campaignNamePatterns", [])
             if patterns and not any(p.lower() in (camp_name or "").lower() for p in patterns):
@@ -1356,59 +1356,135 @@ def fetch_audience_targeting_snapshot(
         if audience_type not in audience_types:
             return
         aud_id, aud_name = _extract_audience_info(c, audience_type)
+        if row is not None and aud_name is None:
+            ul = getattr(row, "user_list", None)
+            if ul and audience_type == "USER_LIST":
+                aud_name = getattr(ul, "name", None)
+            if aud_name is None:
+                ui = getattr(row, "user_interest", None)
+                if ui and audience_type == "USER_INTEREST":
+                    aud_name = getattr(ui, "name", None) or getattr(ui, "user_interest_category", None)
+            if aud_name is None:
+                ca = getattr(row, "combined_audience", None)
+                if ca and audience_type == "COMBINED_AUDIENCE":
+                    aud_name = getattr(ca, "name", None)
+        targeting_mode = None
+        # TargetingSetting (observation vs targeting) is on campaign or ad_group, not on the criterion.
+        entity = ad_group if ad_group is not None else camp
+        ts = getattr(entity, "targeting_setting", None)
+        if ts:
+            restrictions = getattr(ts, "target_restrictions", []) or []
+            for r in restrictions:
+                dim = getattr(r, "targeting_dimension", None)
+                dim_name = getattr(dim, "name", None) if dim and hasattr(dim, "name") else str(dim) if dim else None
+                if dim_name != "AUDIENCE":
+                    continue
+                bid_only = getattr(r, "bid_only", None)
+                if bid_only is not None:
+                    targeting_mode = "OBSERVATION" if bid_only else "TARGETING"
+                    break
+            if targeting_mode is None and restrictions:
+                bid_only = getattr(restrictions[0], "bid_only", None)
+                if bid_only is not None:
+                    targeting_mode = "OBSERVATION" if bid_only else "TARGETING"
         bid_mod = getattr(c, "bid_modifier", None)
         if bid_mod is not None:
             bid_mod = float(bid_mod)
         neg = getattr(c, "negative", None)
-        targeting_mode = None
+        c_status = getattr(c, "status", None)
+        status = getattr(c_status, "name", None) if c_status and hasattr(c_status, "name") else (str(c_status) if c_status else None)
+        audience_size = None
+        if row is not None and audience_type == "USER_LIST":
+            ul = getattr(row, "user_list", None)
+            if ul:
+                sz = getattr(ul, "size_for_display", None) or getattr(ul, "size_for_search", None)
+                if sz is not None:
+                    try:
+                        audience_size = int(sz)
+                    except (TypeError, ValueError):
+                        pass
         rows_out.append({
             "campaign_id": campaign_id,
-            "ad_group_id": ad_group_id,
+            "ad_group_id": (ad_group_id or "").strip(),
             "criterion_id": str(c.criterion_id),
             "audience_type": audience_type,
             "audience_id": aud_id[:256] if aud_id and len(aud_id) > 256 else aud_id,
-            "audience_name": aud_name[:512] if aud_name and len(aud_name) > 512 else aud_name,
-            "targeting_mode": targeting_mode,
+            "audience_name": (aud_name[:512] if aud_name and len(aud_name) > 512 else aud_name) if aud_name else None,
+            "targeting_mode": (targeting_mode[:32] if targeting_mode and len(targeting_mode) > 32 else targeting_mode) if targeting_mode else None,
+            "status": (status[:32] if status and len(status) > 32 else status) if status else None,
             "bid_modifier": bid_mod,
             "negative": bool(neg) if neg is not None else False,
+            "audience_size": audience_size,
         })
 
     try:
         q_campaign = """
-            SELECT campaign.id, campaign.name, campaign_criterion.criterion_id, campaign_criterion.type,
+            SELECT campaign.id, campaign.name, campaign.targeting_setting.target_restrictions,
+                   campaign_criterion.criterion_id, campaign_criterion.type, campaign_criterion.status,
                    campaign_criterion.bid_modifier, campaign_criterion.negative,
                    campaign_criterion.user_list.user_list, campaign_criterion.user_interest.user_interest_category,
-                   campaign_criterion.combined_audience.combined_audience
+                   campaign_criterion.combined_audience.combined_audience,
+                   user_list.name, user_list.size_for_display, user_list.size_for_search,
+                   user_interest.name
             FROM campaign_criterion
             WHERE campaign_criterion.type IN ('USER_LIST', 'USER_INTEREST', 'CUSTOM_AFFINITY', 'CUSTOM_INTENT', 'COMBINED_AUDIENCE', 'CUSTOM_AUDIENCE')
-              AND campaign_criterion.status != 'REMOVED'
-              AND campaign.status != 'REMOVED'
         """
-        stream = ga_service.search_stream(customer_id=customer_id_clean, query=q_campaign)
+        try:
+            stream = ga_service.search_stream(customer_id=customer_id_clean, query=q_campaign)
+        except GoogleAdsException as e:
+            if "UNRECOGNIZED_FIELD" in str(e) or "user_list.name" in str(e) or "user_interest.name" in str(e):
+                q_campaign = """
+                    SELECT campaign.id, campaign.name, campaign.targeting_setting.target_restrictions,
+                           campaign_criterion.criterion_id, campaign_criterion.type, campaign_criterion.status,
+                           campaign_criterion.bid_modifier, campaign_criterion.negative,
+                           campaign_criterion.user_list.user_list, campaign_criterion.user_interest.user_interest_category,
+                           campaign_criterion.combined_audience.combined_audience
+                    FROM campaign_criterion
+                    WHERE campaign_criterion.type IN ('USER_LIST', 'USER_INTEREST', 'CUSTOM_AFFINITY', 'CUSTOM_INTENT', 'COMBINED_AUDIENCE', 'CUSTOM_AUDIENCE')
+                """
+                stream = ga_service.search_stream(customer_id=customer_id_clean, query=q_campaign)
+            else:
+                raise
         for batch in stream:
             for row in batch.results:
                 c = row.campaign_criterion
                 camp = row.campaign
-                process_criterion(c, camp, "", str(camp.id), getattr(camp, "name", None) or "")
+                process_criterion(c, camp, "", str(camp.id), getattr(camp, "name", None) or "", row=row, ad_group=None)
 
         q_ad_group = """
-            SELECT campaign.id, campaign.name, ad_group.id, ad_group_criterion.criterion_id, ad_group_criterion.type,
+            SELECT campaign.id, campaign.name, ad_group.id, ad_group.targeting_setting.target_restrictions,
+                   ad_group_criterion.criterion_id, ad_group_criterion.type, ad_group_criterion.status,
                    ad_group_criterion.bid_modifier, ad_group_criterion.negative,
                    ad_group_criterion.user_list.user_list, ad_group_criterion.user_interest.user_interest_category,
-                   ad_group_criterion.combined_audience.combined_audience
+                   ad_group_criterion.combined_audience.combined_audience,
+                   user_list.name, user_list.size_for_display, user_list.size_for_search,
+                   user_interest.name
             FROM ad_group_criterion
             WHERE ad_group_criterion.type IN ('USER_LIST', 'USER_INTEREST', 'CUSTOM_AFFINITY', 'CUSTOM_INTENT', 'COMBINED_AUDIENCE', 'CUSTOM_AUDIENCE')
-              AND ad_group_criterion.status != 'REMOVED'
-              AND campaign.status != 'REMOVED'
-              AND ad_group.status != 'REMOVED'
         """
-        stream = ga_service.search_stream(customer_id=customer_id_clean, query=q_ad_group)
-        for batch in stream:
+        try:
+            stream_ag = ga_service.search_stream(customer_id=customer_id_clean, query=q_ad_group)
+        except GoogleAdsException as e:
+            if "UNRECOGNIZED_FIELD" in str(e) or "user_list.name" in str(e) or "user_interest.name" in str(e):
+                q_ad_group = """
+                    SELECT campaign.id, campaign.name, ad_group.id, ad_group.targeting_setting.target_restrictions,
+                           ad_group_criterion.criterion_id, ad_group_criterion.type, ad_group_criterion.status,
+                           ad_group_criterion.bid_modifier, ad_group_criterion.negative,
+                           ad_group_criterion.user_list.user_list, ad_group_criterion.user_interest.user_interest_category,
+                           ad_group_criterion.combined_audience.combined_audience
+                    FROM ad_group_criterion
+                    WHERE ad_group_criterion.type IN ('USER_LIST', 'USER_INTEREST', 'CUSTOM_AFFINITY', 'CUSTOM_INTENT', 'COMBINED_AUDIENCE', 'CUSTOM_AUDIENCE')
+                """
+                stream_ag = ga_service.search_stream(customer_id=customer_id_clean, query=q_ad_group)
+            else:
+                raise
+        for batch in stream_ag:
             for row in batch.results:
                 c = row.ad_group_criterion
                 ad_grp = row.ad_group
                 camp = row.campaign
-                process_criterion(c, camp, str(ad_grp.id), str(camp.id), getattr(camp, "name", None) or "")
+                ag_id = str(ad_grp.id) if ad_grp and getattr(ad_grp, "id", None) is not None else ""
+                process_criterion(c, camp, ag_id, str(camp.id), getattr(camp, "name", None) or "", row=row, ad_group=ad_grp)
 
         logger.info("fetch_audience_targeting_snapshot: %s audience criteria for project %s", len(rows_out), project)
     except GoogleAdsException as ex:

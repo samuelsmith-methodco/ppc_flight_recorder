@@ -1231,20 +1231,22 @@ def upsert_audience_targeting_snapshot_daily(
             params[prefix + "audience_id"] = _safe_str(r.get("audience_id"), 256)
             params[prefix + "audience_name"] = _safe_str(r.get("audience_name"), 512)
             params[prefix + "targeting_mode"] = _safe_str(r.get("targeting_mode"), 32)
+            params[prefix + "audience_size"] = r.get("audience_size")
+            params[prefix + "status"] = _safe_str(r.get("status"), 32)
             params[prefix + "bid_modifier"] = r.get("bid_modifier")
             params[prefix + "negative"] = r.get("negative")
             values_parts.append(
                 f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_group_id)s, %(r{i}_criterion_id)s, "
-                f"%(r{i}_audience_type)s, %(r{i}_audience_id)s, %(r{i}_audience_name)s, %(r{i}_targeting_mode)s, %(r{i}_bid_modifier)s, %(r{i}_negative)s)"
+                f"%(r{i}_audience_type)s, %(r{i}_audience_id)s, %(r{i}_audience_name)s, %(r{i}_targeting_mode)s, %(r{i}_audience_size)s, %(r{i}_status)s, %(r{i}_bid_modifier)s, %(r{i}_negative)s)"
             )
         values_sql = ",\n                ".join(values_parts)
         merge_sql = f"""
             MERGE INTO {tbl} AS target
-            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative)) AS source
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, audience_size, status, bid_modifier, negative)) AS source
             ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.campaign_id = source.campaign_id AND target.ad_group_id = source.ad_group_id AND target.criterion_id = source.criterion_id
-            WHEN MATCHED THEN UPDATE SET audience_type = source.audience_type, audience_id = source.audience_id, audience_name = source.audience_name, targeting_mode = source.targeting_mode, bid_modifier = source.bid_modifier, negative = source.negative
-            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative)
-            VALUES (source.snapshot_date, source.customer_id, source.campaign_id, source.ad_group_id, source.criterion_id, source.audience_type, source.audience_id, source.audience_name, source.targeting_mode, source.bid_modifier, source.negative)
+            WHEN MATCHED THEN UPDATE SET audience_type = source.audience_type, audience_id = source.audience_id, audience_name = source.audience_name, targeting_mode = source.targeting_mode, audience_size = source.audience_size, status = source.status, bid_modifier = source.bid_modifier, negative = source.negative
+            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, audience_size, status, bid_modifier, negative)
+            VALUES (source.snapshot_date, source.customer_id, source.campaign_id, source.ad_group_id, source.criterion_id, source.audience_type, source.audience_id, source.audience_name, source.targeting_mode, source.audience_size, source.status, source.bid_modifier, source.negative)
         """
         execute(conn, merge_sql, params)
         conn.commit()
@@ -1256,16 +1258,35 @@ def upsert_audience_targeting_snapshot_daily(
 
 def get_audience_targeting_snapshot_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
     tbl = _table("ppc_audience_targeting_snapshot_daily")
+    params = {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()}
 
     def do(conn):
-        q = f"SELECT campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
-        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+        q = f"SELECT campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, audience_size, status, bid_modifier, negative FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, params)
 
-    df = _run_with_conn(conn, do)
+    try:
+        df = _run_with_conn(conn, do)
+    except Exception:
+        q_fallback = f"SELECT campaign_id, ad_group_id, criterion_id, audience_type, audience_id, audience_name, targeting_mode, bid_modifier, negative FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        def do_fallback(conn):
+            return execute_query(conn, q_fallback, params)
+        df = _run_with_conn(conn, do_fallback)
+        if not df.empty:
+            if "audience_size" not in df.columns:
+                df["audience_size"] = None  # type: ignore[assignment]
+            if "status" not in df.columns:
+                df["status"] = None  # type: ignore[assignment]
     if df.empty:
         return []
     df.columns = [c.lower() for c in df.columns]
-    return df.to_dict("records")
+    records = df.to_dict("records")
+    for row in records:
+        ag = row.get("ad_group_id")
+        if ag is None or (isinstance(ag, float) and ag != ag) or str(ag).strip() == "":
+            row["ad_group_id"] = ""
+        else:
+            row["ad_group_id"] = str(ag)
+    return records
 
 
 def insert_audience_targeting_diff_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
@@ -1276,7 +1297,7 @@ def insert_audience_targeting_diff_daily(snapshot_date: date, customer_id: str, 
 
     def do(conn):
         execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
-        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, change_type, audience_type, audience_id, audience_name, targeting_mode, old_value, new_value) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(criterion_id)s, %(change_type)s, %(audience_type)s, %(audience_id)s, %(audience_name)s, %(targeting_mode)s, %(old_value)s, %(new_value)s)"
+        insert_sql = f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, change_type, audience_type, audience_id, audience_name, targeting_mode, old_value, new_value, old_size, new_size) VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(criterion_id)s, %(change_type)s, %(audience_type)s, %(audience_id)s, %(audience_name)s, %(targeting_mode)s, %(old_value)s, %(new_value)s, %(old_size)s, %(new_size)s)"
         params_list = [
             {
                 "snapshot_date": date_str,
@@ -1291,6 +1312,8 @@ def insert_audience_targeting_diff_daily(snapshot_date: date, customer_id: str, 
                 "targeting_mode": _safe_str(r.get("targeting_mode"), 32),
                 "old_value": _safe_str(r.get("old_value"), 65535),
                 "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_size": r.get("old_size"),
+                "new_size": r.get("new_size"),
             }
             for r in rows
         ]
