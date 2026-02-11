@@ -1,8 +1,7 @@
 -- =============================================================================
 -- PPC Flight Recorder Tables – run in your Snowflake database/schema
 -- =============================================================================
--- Migration: If you have ppc_campaign_control_diff_daily, drop it:
---   DROP TABLE IF EXISTS ppc_campaign_control_diff_daily;
+-- Migration: ppc_campaign_control_diff_daily is now created (day-over-day control state changes).
 -- Migration: If ppc_campaign_outcomes_daily already exists without campaign_name:
 --   ALTER TABLE ppc_campaign_outcomes_daily ADD COLUMN campaign_name VARCHAR(512);
 -- Migration: Google Ads tables use customer_id (Google Ads customer ID) instead of project name.
@@ -42,7 +41,17 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_control_state_daily (
     PRIMARY KEY (campaign_id, snapshot_date, customer_id)
 );
 
--- ppc_campaign_control_diff_daily removed: no longer tracking campaign control diffs.
+-- Campaign control state diff: day-over-day changes (budget, bidding strategy, status, etc.)
+CREATE TABLE IF NOT EXISTS ppc_campaign_control_diff_daily (
+    campaign_id VARCHAR(64) NOT NULL,
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    changed_metric_name VARCHAR(128) NOT NULL,
+    old_value VARCHAR(65535),
+    new_value VARCHAR(65535),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (campaign_id, snapshot_date, customer_id, changed_metric_name)
+);
 
 CREATE TABLE IF NOT EXISTS ppc_campaign_outcomes_daily (
     campaign_id VARCHAR(64) NOT NULL,

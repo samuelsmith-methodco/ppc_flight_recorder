@@ -34,10 +34,12 @@ from google_ads_client import (
 from snowflake_connection import get_connection
 from storage import (
     get_ad_group_outcomes_for_date,
+    get_control_state_for_date,
     get_ga4_acquisition_for_date,
     get_keyword_outcomes_for_date,
     get_outcomes_for_date,
     insert_ad_group_outcomes_diff_daily,
+    insert_control_diff_daily,
     insert_ga4_acquisition_diff_daily,
     insert_keyword_outcomes_diff_daily,
     insert_outcomes_diff_daily,
@@ -68,6 +70,15 @@ GA4_ACQUISITION_METRIC_FIELDS = [
     "average_session_duration_sec", "engagement_rate", "bounce_rate",
 ]
 
+CONTROL_STATE_METRIC_FIELDS = [
+    "campaign_name", "status", "advertising_channel_type", "advertising_channel_sub_type",
+    "daily_budget_micros", "daily_budget_amount", "budget_delivery_method", "bidding_strategy_type",
+    "target_cpa_micros", "target_cpa_amount", "target_roas",
+    "geo_target_ids", "network_settings_target_google_search", "network_settings_target_search_network",
+    "network_settings_target_content_network", "network_settings_target_partner_search_network",
+    "ad_schedule_json", "audience_target_count",
+]
+
 # Max rows per MERGE in historical backfill to avoid timeouts
 GA4_UPSERT_BATCH_SIZE = 2000
 OUTCOMES_UPSERT_BATCH_SIZE = 1000  # Batch size for campaign outcomes upserts
@@ -83,7 +94,36 @@ def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
         "daily_budget_micros": row.get("daily_budget_micros"), "daily_budget_amount": row.get("daily_budget_amount"),
         "budget_delivery_method": row.get("budget_delivery_method"), "bidding_strategy_type": row.get("bidding_strategy_type"),
         "target_cpa_micros": row.get("target_cpa_micros"), "target_cpa_amount": row.get("target_cpa_amount"), "target_roas": row.get("target_roas"),
+        "geo_target_ids": row.get("geo_target_ids"),
+        "network_settings_target_google_search": row.get("network_settings_target_google_search"),
+        "network_settings_target_search_network": row.get("network_settings_target_search_network"),
+        "network_settings_target_content_network": row.get("network_settings_target_content_network"),
+        "network_settings_target_partner_search_network": row.get("network_settings_target_partner_search_network"),
+        "ad_schedule_json": row.get("ad_schedule_json"),
+        "audience_target_count": row.get("audience_target_count"),
     }
+
+
+def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compare control state metrics day-over-day; return list for ppc_campaign_control_diff_daily.
+    Inserts a row for every (campaign, metric) every day, even when unchanged (old_value = new_value).
+    """
+    prior_by_cid = {r["campaign_id"]: r for r in prior}
+    diffs = []
+    for cur in current:
+        cid = cur.get("campaign_id")
+        prev = prior_by_cid.get(cid)
+        if not prev:
+            continue
+        for field in CONTROL_STATE_METRIC_FIELDS:
+            ov, nv = prev.get(field), cur.get(field)
+            diffs.append({
+                "campaign_id": cid,
+                "changed_metric_name": field,
+                "old_value": str(ov) if ov is not None else None,
+                "new_value": str(nv) if nv is not None else None,
+            })
+    return diffs
 
 
 def _outcome_row_for_diff(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -243,6 +283,7 @@ def run_sync(
     projects: List[str],
     run_ga4: bool = False,
     google_ads_filters: Optional[Dict[str, Any]] = None,
+    control_state_only: bool = False,
 ) -> None:
     snapshot_str = snapshot_date.isoformat()
     prior_date = snapshot_date - timedelta(days=1)
@@ -251,7 +292,7 @@ def run_sync(
     with get_connection() as conn:
         for project in projects:
             customer_id = normalize_customer_id(get_google_ads_customer_id(project))
-            logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s", project, customer_id, snapshot_str)
+            logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, " (control state only)" if control_state_only else "")
             try:
                 control_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
                 if not control_rows:
@@ -260,6 +301,14 @@ def run_sync(
                     state_for_storage = [_control_state_row_for_storage(r) for r in control_rows]
                     upsert_control_state_daily(snapshot_date, customer_id, state_for_storage, conn=conn)
                     upsert_campaign_dims(snapshot_date, customer_id, state_for_storage, conn=conn)
+                    prior_control = get_control_state_for_date(customer_id, prior_date, conn=conn)
+                    if prior_control:
+                        control_diff_list = compute_control_state_diffs(state_for_storage, prior_control)
+                        if control_diff_list:
+                            insert_control_diff_daily(snapshot_date, customer_id, control_diff_list, conn=conn)
+
+                if control_state_only:
+                    continue
 
                 campaigns_one_day = fetch_campaigns(start_date=snapshot_str, end_date=snapshot_str, project=project, google_ads_filters=google_ads_filters)
                 if campaigns_one_day:
@@ -296,6 +345,9 @@ def run_sync(
             except Exception as e:
                 logger.exception("PPC Flight Recorder sync failed for project=%s: %s", project, e)
                 raise
+
+        if control_state_only:
+            return
 
         if run_ga4:
             logger.info("Fetching GA4 acquisition (traffic, user, overview) for date=%s", snapshot_str)
@@ -520,6 +572,7 @@ def main() -> None:
     parser.add_argument("--batch-days", type=int, default=30, help="Chunk size in days for historical fetch (default: 30)")
     parser.add_argument("--no-diffs", action="store_true", default=True, help="Skip diff computation in historical (default: True)")
     parser.add_argument("--diffs", action="store_false", dest="no_diffs", help="Compute outcome/GA4 diffs during historical backfill")
+    parser.add_argument("--control-state-only", action="store_true", help="Update only ppc_campaign_control_state_daily and ppc_campaign_control_diff_daily (no outcomes, no GA4)")
     args = parser.parse_args()
 
     projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
@@ -550,7 +603,12 @@ def main() -> None:
     else:
         snapshot_date = date.today() - timedelta(days=1)
 
-    run_sync(snapshot_date=snapshot_date, projects=projects, run_ga4=args.ga4)
+    run_sync(
+        snapshot_date=snapshot_date,
+        projects=projects,
+        run_ga4=args.ga4,
+        control_state_only=args.control_state_only,
+    )
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 
 

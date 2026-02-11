@@ -39,12 +39,8 @@ def _run_daily_sync() -> None:
     from sync import run_sync
 
     today = date.today()
-    # Sync: today-2, today-1, today
-    dates_to_sync = [
-        today - timedelta(days=2),
-        today - timedelta(days=1),
-        today,
-    ]
+    # Sync: yesterday only
+    dates_to_sync = [today - timedelta(days=1)]
     projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
     completed = []
     last_error = None
@@ -116,7 +112,7 @@ async def lifespan(app: FastAPI):
     time_left = _format_time_until(next_run)
     next_iso = next_run.isoformat() if next_run else "?"
     logger.info(
-        "Scheduler started: daily sync at %02d:%02d %s (last 2 days + today, GA4 + diffs); next run in %s (%s)",
+        "Scheduler started: daily sync at %02d:%02d %s (yesterday, GA4 + diffs); next run in %s (%s)",
         SYNC_SCHEDULE_HOUR,
         SYNC_SCHEDULE_MINUTE,
         SYNC_SCHEDULE_TIMEZONE,
@@ -167,13 +163,14 @@ def schedule():
 
 class SyncRequest(BaseModel):
     date: Optional[str] = None  # YYYY-MM-DD; default yesterday
+    control_state_only: Optional[bool] = False  # If true, update only control_state_daily and control_diff_daily
 
 
 @app.post("/sync")
 def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     """
-    Run sync once (same as daily job: GA4 + diffs).
-    Optional body: {"date": "2025-02-09"} to sync a specific date; default is yesterday.
+    Run sync once (same as daily job: GA4 + diffs), or control-state-only.
+    Optional body: {"date": "YYYY-MM-DD", "control_state_only": true}.
     """
     from sync import run_sync
 
@@ -185,17 +182,20 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     else:
         snapshot_date = date.today() - timedelta(days=1)
 
+    control_state_only = bool(body and body.control_state_only)
     projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
     try:
         run_sync(
             snapshot_date=snapshot_date,
             projects=projects,
-            run_ga4=True,
+            run_ga4=not control_state_only,
+            control_state_only=control_state_only,
         )
         return {
             "status": "ok",
             "snapshot_date": snapshot_date.isoformat(),
             "projects": projects,
+            "control_state_only": control_state_only,
         }
     except Exception as e:
         logger.exception("Manual sync failed: %s", e)

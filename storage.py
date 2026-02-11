@@ -64,10 +64,20 @@ def upsert_control_state_daily(
             params[prefix + "target_cpa_micros"] = r.get("target_cpa_micros")
             params[prefix + "target_cpa_amount"] = r.get("target_cpa_amount")
             params[prefix + "target_roas"] = r.get("target_roas")
+            params[prefix + "geo_target_ids"] = _safe_str(r.get("geo_target_ids"), 4096)
+            params[prefix + "network_settings_target_google_search"] = r.get("network_settings_target_google_search")
+            params[prefix + "network_settings_target_search_network"] = r.get("network_settings_target_search_network")
+            params[prefix + "network_settings_target_content_network"] = r.get("network_settings_target_content_network")
+            params[prefix + "network_settings_target_partner_search_network"] = r.get("network_settings_target_partner_search_network")
+            params[prefix + "ad_schedule_json"] = _safe_str(r.get("ad_schedule_json"), 65535)
+            params[prefix + "audience_target_count"] = r.get("audience_target_count")
             values_parts.append(
                 f"(%(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_name)s, %(r{i}_status)s, "
                 f"%(r{i}_advertising_channel_type)s, %(r{i}_advertising_channel_sub_type)s, %(r{i}_daily_budget_micros)s, %(r{i}_daily_budget_amount)s, "
-                f"%(r{i}_budget_delivery_method)s, %(r{i}_bidding_strategy_type)s, %(r{i}_target_cpa_micros)s, %(r{i}_target_cpa_amount)s, %(r{i}_target_roas)s)"
+                f"%(r{i}_budget_delivery_method)s, %(r{i}_bidding_strategy_type)s, %(r{i}_target_cpa_micros)s, %(r{i}_target_cpa_amount)s, %(r{i}_target_roas)s, "
+                f"%(r{i}_geo_target_ids)s, %(r{i}_network_settings_target_google_search)s, %(r{i}_network_settings_target_search_network)s, "
+                f"%(r{i}_network_settings_target_content_network)s, %(r{i}_network_settings_target_partner_search_network)s, "
+                f"%(r{i}_ad_schedule_json)s, %(r{i}_audience_target_count)s)"
             )
         values_sql = ",\n                ".join(values_parts)
         merge_sql = f"""
@@ -75,7 +85,7 @@ def upsert_control_state_daily(
             USING (
                 SELECT * FROM (VALUES
                 {values_sql}
-                ) AS v(campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas)
+                ) AS v(campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, geo_target_ids, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count)
             ) AS source
             ON target.campaign_id = source.campaign_id AND target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id
             WHEN MATCHED THEN UPDATE SET
@@ -84,9 +94,14 @@ def upsert_control_state_daily(
                 advertising_channel_sub_type = source.advertising_channel_sub_type,
                 daily_budget_micros = source.daily_budget_micros, daily_budget_amount = source.daily_budget_amount,
                 budget_delivery_method = source.budget_delivery_method, bidding_strategy_type = source.bidding_strategy_type,
-                target_cpa_micros = source.target_cpa_micros, target_cpa_amount = source.target_cpa_amount, target_roas = source.target_roas
-            WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas)
-            VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.campaign_name, source.status, source.advertising_channel_type, source.advertising_channel_sub_type, source.daily_budget_micros, source.daily_budget_amount, source.budget_delivery_method, source.bidding_strategy_type, source.target_cpa_micros, source.target_cpa_amount, source.target_roas)
+                target_cpa_micros = source.target_cpa_micros, target_cpa_amount = source.target_cpa_amount, target_roas = source.target_roas,
+                geo_target_ids = source.geo_target_ids, network_settings_target_google_search = source.network_settings_target_google_search,
+                network_settings_target_search_network = source.network_settings_target_search_network,
+                network_settings_target_content_network = source.network_settings_target_content_network,
+                network_settings_target_partner_search_network = source.network_settings_target_partner_search_network,
+                ad_schedule_json = source.ad_schedule_json, audience_target_count = source.audience_target_count
+            WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, geo_target_ids, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count)
+            VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.campaign_name, source.status, source.advertising_channel_type, source.advertising_channel_sub_type, source.daily_budget_micros, source.daily_budget_amount, source.budget_delivery_method, source.bidding_strategy_type, source.target_cpa_micros, source.target_cpa_amount, source.target_roas, source.geo_target_ids, source.network_settings_target_google_search, source.network_settings_target_search_network, source.network_settings_target_content_network, source.network_settings_target_partner_search_network, source.ad_schedule_json, source.audience_target_count)
             """
         execute(conn, merge_sql, params)
         conn.commit()
@@ -244,7 +259,7 @@ def get_control_state_for_date(customer_id: str, snapshot_date: date, conn: Opti
     tbl = _table("ppc_campaign_control_state_daily")
 
     def do(conn):
-        q = f"SELECT campaign_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        q = f"SELECT campaign_id, campaign_name, status, advertising_channel_type, advertising_channel_sub_type, daily_budget_micros, daily_budget_amount, budget_delivery_method, bidding_strategy_type, target_cpa_micros, target_cpa_amount, target_roas, geo_target_ids, network_settings_target_google_search, network_settings_target_search_network, network_settings_target_content_network, network_settings_target_partner_search_network, ad_schedule_json, audience_target_count FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
         return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
 
     df = _run_with_conn(conn, do)
@@ -252,6 +267,24 @@ def get_control_state_for_date(customer_id: str, snapshot_date: date, conn: Opti
         return []
     df.columns = [c.lower() for c in df.columns]
     return df.to_dict("records")
+
+
+def insert_control_diff_daily(snapshot_date: date, customer_id: str, diff_rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    if not diff_rows:
+        return 0
+    tbl = _table("ppc_campaign_control_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = f"INSERT INTO {tbl} (campaign_id, snapshot_date, customer_id, changed_metric_name, old_value, new_value) VALUES (%(campaign_id)s, %(snapshot_date)s::DATE, %(customer_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
+        params_list = [{"campaign_id": r["campaign_id"], "snapshot_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _safe_str(r.get("old_value"), 65535), "new_value": _safe_str(r.get("new_value"), 65535)} for r in diff_rows]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s control_state diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(diff_rows)
 
 
 def upsert_ga4_traffic_acquisition_daily(rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:

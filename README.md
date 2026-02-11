@@ -50,8 +50,7 @@ Run the DDL in your Snowflake database/schema (same account you use in `.env`):
 sql/ppc-flight-recorder-tables.sql
 ```
 
-Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.  
-*(Table `ppc_campaign_control_diff_daily` has been removed.)*
+Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
 
 ## Run
 
@@ -72,6 +71,9 @@ python sync.py --ga4
 
 # Historical backfill: sync last 1 year with batch size 30 days, GA4 included, and diffs computed
 python sync.py --start-date 2024-02-06 --end-date 2025-02-06 --batch-days 30 --ga4 --diffs
+
+# Control state only: update only ppc_campaign_control_state_daily and ppc_campaign_control_diff_daily (no outcomes, no GA4)
+python sync.py --date 2026-02-10 --control-state-only
 ```
 
 Cron example (daily at 2 AM with GA4):
@@ -100,11 +102,11 @@ uvicorn server:app --host 0.0.0.0 --port 9001
 
 The server listens on **port 9001**. To use a different port: `uvicorn server:app --host 0.0.0.0 --port 8000`
 
-- **Scheduler**: Runs daily at `SYNC_SCHEDULE_HOUR:SYNC_SCHEDULE_MINUTE` in `SYNC_SCHEDULE_TIMEZONE` (default **9:30 PM America/New_York**). Syncs **last 2 days + today** (3 dates), all projects in `PPC_PROJECTS`, with GA4 and outcome/GA4 diffs.
+- **Scheduler**: Runs daily at `SYNC_SCHEDULE_HOUR:SYNC_SCHEDULE_MINUTE` in `SYNC_SCHEDULE_TIMEZONE` (default **9:30 PM America/New_York**). Syncs **yesterday** only, all projects in `PPC_PROJECTS`, with GA4 and outcome/GA4 diffs.
 - **Endpoints**:
   - `GET /health` – health check
   - `GET /schedule` – current schedule and next run time
-  - `POST /sync` – trigger sync once (optional body: `{"date": "YYYY-MM-DD"}` for a specific date; default yesterday)
+  - `POST /sync` – trigger sync once (optional body: `{"date": "YYYY-MM-DD", "control_state_only": true}`; default yesterday, full sync)
 
 Set in `.env` to change the daily run time (e.g. 9:30 PM EST):
 
