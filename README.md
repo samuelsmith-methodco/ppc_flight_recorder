@@ -99,6 +99,12 @@ python sync.py --date 2026-02-10 --control-state-adcreative-only
 
 # Audience targeting snapshot and diff only (ppc_audience_targeting_snapshot_daily, ppc_audience_targeting_diff_daily)
 python sync.py --date 2026-02-10 --control-state-audience-only
+
+# Device targeting only (ppc_ad_group_device_modifier_daily, ppc_ad_group_device_modifier_diff_daily)
+python sync.py --date 2026-02-10 --control-state-device-only
+
+# Change history only – actions taken (ppc_change_event_daily; e.g. by automated rules, UI, API)
+python sync.py --date 2026-02-10 --control-state-changes-only
 ```
 
 ### CLI reference (sync.py)
@@ -118,6 +124,8 @@ python sync.py --date 2026-02-10 --control-state-audience-only
 | `--control-state-adgroup-only` | Only ad group snapshot and change tables |
 | `--control-state-adcreative-only` | Only ad creative snapshot and diff tables |
 | `--control-state-audience-only` | Only audience targeting snapshot and diff tables |
+| `--control-state-device-only` | Only device targeting (ad group device modifiers) snapshot and diff tables |
+| `--control-state-changes-only` | Only change history / actions taken (ppc_change_event_daily) |
 
 **Checking geo in Google Ads:** For locations and radius targeting, check **Campaigns** → campaign → **Locations**. Per-criterion geo (including presence/interest when available) is stored in `ppc_campaign_geo_targeting_daily`.
 

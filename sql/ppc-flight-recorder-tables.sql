@@ -5,6 +5,9 @@
 -- Migration: Geo names for control state (run if ppc_campaign_control_state_daily exists without them):
 --   ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS geo_target_names VARCHAR(4096);
 --   ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS geo_negative_names VARCHAR(4096);
+-- Migration: Change event old/new values (run if ppc_change_event_daily exists without them):
+--   ALTER TABLE ppc_change_event_daily ADD COLUMN IF NOT EXISTS old_value VARCHAR(65535);
+--   ALTER TABLE ppc_change_event_daily ADD COLUMN IF NOT EXISTS new_value VARCHAR(65535);
 -- Migration: TIER 4 policy_summary for ppc_ad_creative_snapshot_daily (run if table exists):
 --   ALTER TABLE ppc_ad_creative_snapshot_daily ADD COLUMN policy_summary_json VARCHAR(65535);
 -- Migration: status column for ppc_ad_creative_snapshot_daily (run if table exists):
@@ -348,6 +351,57 @@ CREATE TABLE IF NOT EXISTS ppc_ad_group_change_daily (
     new_value VARCHAR(65535),
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (snapshot_date, customer_id, campaign_id, ad_group_id)
+);
+
+-- ppc_ad_group_device_modifier_daily: Device targeting (ad group-level bid modifiers: MOBILE, DESKTOP, TABLET). One row per (ad_group, device_type) per day.
+--   device_type: MOBILE, DESKTOP, TABLET. bid_modifier: multiplier (e.g. 1.2 = +20%). Capture frequency: daily; date of change from _diff_daily.
+CREATE TABLE IF NOT EXISTS ppc_ad_group_device_modifier_daily (
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    campaign_id VARCHAR(64) NOT NULL,
+    ad_group_id VARCHAR(64) NOT NULL,
+    device_type VARCHAR(32) NOT NULL,
+    bid_modifier NUMBER(8, 4),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, customer_id, campaign_id, ad_group_id, device_type)
+);
+
+-- ppc_ad_group_device_modifier_diff_daily: Day-over-day device modifier changes (add/remove/change). changed_metric_name: device_modifier_added | device_modifier_removed | bid_modifier.
+CREATE TABLE IF NOT EXISTS ppc_ad_group_device_modifier_diff_daily (
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    campaign_id VARCHAR(64) NOT NULL,
+    ad_group_id VARCHAR(64) NOT NULL,
+    device_type VARCHAR(32) NOT NULL,
+    changed_metric_name VARCHAR(128) NOT NULL,
+    old_value VARCHAR(65535),
+    new_value VARCHAR(65535),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, customer_id, campaign_id, ad_group_id, device_type, changed_metric_name)
+);
+
+-- ppc_change_event_daily: Change history (ChangeEvent) – actions taken in the account (UI, API, scripts, automated rules).
+--   Captures "actions taken" for audit; rule logic/trigger events are not exposed by the API.
+--   change_date: Date of the change (for partitioning). change_event_resource_name: Unique event id from API.
+--   change_resource_type: CAMPAIGN, AD_GROUP, etc. resource_change_operation: CREATE, UPDATE, DELETE.
+--   changed_fields: Comma-separated field paths. user_email, client_type: Who/what made the change (e.g. GOOGLE_ADS for rules).
+--   old_value, new_value: Serialized old/new resource (JSON or text); only changed fields are populated in the API payload.
+--   Only last 30 days are queryable via API; sync daily to retain history.
+CREATE TABLE IF NOT EXISTS ppc_change_event_daily (
+    change_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    change_event_resource_name VARCHAR(512) NOT NULL,
+    change_date_time VARCHAR(48),
+    change_resource_type VARCHAR(64),
+    change_resource_name VARCHAR(512),
+    resource_change_operation VARCHAR(32),
+    changed_fields VARCHAR(4096),
+    user_email VARCHAR(256),
+    client_type VARCHAR(64),
+    old_value VARCHAR(65535),
+    new_value VARCHAR(65535),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (change_date, customer_id, change_event_resource_name)
 );
 
 -- ppc_keyword_outcomes_daily: Keyword-level performance metrics (one row per keyword per outcome_date).

@@ -769,6 +769,156 @@ def insert_ad_group_change_daily(snapshot_date: date, customer_id: str, rows: Li
     return len(rows)
 
 
+# ---- Ad group device modifier (device targeting) snapshot / diff ----
+
+def upsert_ad_group_device_modifier_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    """Replace all device modifier rows for (snapshot_date, customer_id) then insert the given rows."""
+    tbl = _table("ppc_ad_group_device_modifier_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        if not rows:
+            conn.commit()
+            return
+        insert_sql = (
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, device_type, bid_modifier) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(device_type)s, %(bid_modifier)s)"
+        )
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r.get("campaign_id"),
+                "ad_group_id": r.get("ad_group_id"),
+                "device_type": _safe_str(r.get("device_type"), 32),
+                "bid_modifier": r.get("bid_modifier"),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s ad_group_device_modifier rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_ad_group_device_modifier_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """Return device modifier rows for (customer_id, snapshot_date) from ppc_ad_group_device_modifier_daily."""
+    tbl = _table("ppc_ad_group_device_modifier_daily")
+
+    def do(conn):
+        q = f"SELECT snapshot_date, customer_id, campaign_id, ad_group_id, device_type, bid_modifier FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_ad_group_device_modifier_diff_daily(snapshot_date: date, customer_id: str, diff_rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    """Insert day-over-day device modifier changes. Replaces all rows for (snapshot_date, customer_id)."""
+    if not diff_rows:
+        return 0
+    tbl = _table("ppc_ad_group_device_modifier_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = (
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, campaign_id, ad_group_id, device_type, changed_metric_name, old_value, new_value) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(campaign_id)s, %(ad_group_id)s, %(device_type)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
+        )
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "campaign_id": r["campaign_id"],
+                "ad_group_id": r["ad_group_id"],
+                "device_type": _safe_str(r.get("device_type"), 32),
+                "changed_metric_name": _safe_str(r["changed_metric_name"], 128),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in diff_rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s ad_group_device_modifier diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(diff_rows)
+
+
+# ---- Change event (change history / actions taken) ----
+
+def upsert_change_events_daily(
+    change_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    """Replace all change event rows for (change_date, customer_id) then insert the given rows."""
+    tbl = _table("ppc_change_event_daily")
+    date_str = change_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE change_date = %(change_date)s::DATE AND customer_id = %(customer_id)s", {"change_date": date_str, "customer_id": customer_id})
+        if not rows:
+            conn.commit()
+            return
+        insert_sql = (
+            f"INSERT INTO {tbl} (change_date, customer_id, change_event_resource_name, change_date_time, change_resource_type, change_resource_name, resource_change_operation, changed_fields, user_email, client_type, old_value, new_value) "
+            "VALUES (%(change_date)s::DATE, %(customer_id)s, %(change_event_resource_name)s, %(change_date_time)s, %(change_resource_type)s, %(change_resource_name)s, %(resource_change_operation)s, %(changed_fields)s, %(user_email)s, %(client_type)s, %(old_value)s, %(new_value)s)"
+        )
+        params_list = [
+            {
+                "change_date": date_str,
+                "customer_id": customer_id,
+                "change_event_resource_name": _safe_str(r.get("change_event_resource_name"), 512),
+                "change_date_time": _safe_str(r.get("change_date_time"), 48),
+                "change_resource_type": _safe_str(r.get("change_resource_type"), 64),
+                "change_resource_name": _safe_str(r.get("change_resource_name"), 512),
+                "resource_change_operation": _safe_str(r.get("resource_change_operation"), 32),
+                "changed_fields": _safe_str(r.get("changed_fields"), 4096),
+                "user_email": _safe_str(r.get("user_email"), 256),
+                "client_type": _safe_str(r.get("client_type"), 64),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s change_event rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_change_events_for_date(customer_id: str, change_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """Return change event rows for (customer_id, change_date) from ppc_change_event_daily."""
+    tbl = _table("ppc_change_event_daily")
+
+    def do(conn):
+        q = f"SELECT change_date, customer_id, change_event_resource_name, change_date_time, change_resource_type, change_resource_name, resource_change_operation, changed_fields, user_email, client_type, old_value, new_value FROM {tbl} WHERE customer_id = %(customer_id)s AND change_date = %(change_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "change_date": change_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
 def upsert_keyword_outcomes_daily(outcome_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
     if not rows:
         return 0

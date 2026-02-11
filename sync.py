@@ -29,7 +29,9 @@ from google_ads_client import (
     fetch_ad_group_structure_snapshot,
     fetch_ad_groups_daily,
     fetch_audience_targeting_snapshot,
+    fetch_ad_group_device_modifiers,
     fetch_campaign_control_state,
+    fetch_change_events,
     fetch_campaigns,
     fetch_campaigns_daily,
     fetch_keyword_criteria_snapshot,
@@ -39,6 +41,7 @@ from google_ads_client import (
 from snowflake_connection import get_connection
 from storage import (
     get_ad_creative_snapshot_for_date,
+    get_ad_group_device_modifier_for_date,
     get_ad_group_outcomes_for_date,
     get_ad_group_snapshot_for_date,
     get_audience_targeting_snapshot_for_date,
@@ -51,6 +54,7 @@ from storage import (
     get_outcomes_for_date,
     insert_ad_creative_diff_daily,
     insert_ad_group_change_daily,
+    insert_ad_group_device_modifier_diff_daily,
     insert_audience_targeting_diff_daily,
     insert_ad_group_outcomes_diff_daily,
     insert_control_diff_daily,
@@ -61,6 +65,8 @@ from storage import (
     insert_negative_keyword_diff_daily,
     insert_outcomes_diff_daily,
     upsert_ad_creative_snapshot_daily,
+    upsert_ad_group_device_modifier_daily,
+    upsert_change_events_daily,
     upsert_ad_group_dims,
     upsert_ad_group_snapshot_daily,
     upsert_audience_targeting_snapshot_daily,
@@ -112,6 +118,9 @@ GA4_UPSERT_BATCH_SIZE = 2000
 OUTCOMES_UPSERT_BATCH_SIZE = 1000  # Batch size for campaign outcomes upserts
 AD_GROUP_UPSERT_BATCH_SIZE = 1000  # Batch size for ad group outcomes upserts
 KEYWORD_UPSERT_BATCH_SIZE = 1000   # Batch size for keyword outcomes upserts
+
+# When updating change events daily, fetch and upsert this many days (API allows last 30)
+CHANGE_EVENTS_DAYS = 7
 
 
 def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -226,6 +235,53 @@ def compute_geo_targeting_diffs(prior: List[Dict[str, Any]], current: List[Dict[
                 "changed_metric_name": field,
                 "old_value": str(ov) if ov is not None else None,
                 "new_value": str(nv) if nv is not None else None,
+            })
+    return diffs
+
+
+def compute_ad_group_device_modifier_diffs(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compare device modifier snapshots day-over-day; return rows for ppc_ad_group_device_modifier_diff_daily.
+    Emits device_modifier_added, device_modifier_removed, and bid_modifier (value change).
+    """
+    def _key(r):
+        return (r.get("campaign_id"), r.get("ad_group_id"), r.get("device_type"))
+
+    prior_by_key = {_key(r): r for r in prior}
+    cur_by_key = {_key(r): r for r in current}
+    diffs: List[Dict[str, Any]] = []
+    for k, cur in cur_by_key.items():
+        cid, agid, dtype = k
+        prev = prior_by_key.get(k)
+        if prev is None:
+            diffs.append({
+                "campaign_id": cid,
+                "ad_group_id": agid,
+                "device_type": dtype,
+                "changed_metric_name": "device_modifier_added",
+                "old_value": None,
+                "new_value": str(cur.get("bid_modifier")) if cur.get("bid_modifier") is not None else None,
+            })
+        else:
+            ov, nv = prev.get("bid_modifier"), cur.get("bid_modifier")
+            if ov != nv:
+                diffs.append({
+                    "campaign_id": cid,
+                    "ad_group_id": agid,
+                    "device_type": dtype,
+                    "changed_metric_name": "bid_modifier",
+                    "old_value": str(ov) if ov is not None else None,
+                    "new_value": str(nv) if nv is not None else None,
+                })
+    for k, prev in prior_by_key.items():
+        if k not in cur_by_key:
+            cid, agid, dtype = k
+            diffs.append({
+                "campaign_id": cid,
+                "ad_group_id": agid,
+                "device_type": dtype,
+                "changed_metric_name": "device_modifier_removed",
+                "old_value": str(prev.get("bid_modifier")) if prev.get("bid_modifier") is not None else None,
+                "new_value": None,
             })
     return diffs
 
@@ -704,6 +760,8 @@ def run_sync(
     control_state_adcreative_only: bool = False,
     control_state_audience_only: bool = False,
     control_state_campaign_only: bool = False,
+    control_state_device_only: bool = False,
+    control_state_changes_only: bool = False,
 ) -> None:
     snapshot_str = snapshot_date.isoformat()
     prior_date = snapshot_date - timedelta(days=1)
@@ -719,6 +777,8 @@ def run_sync(
                 else " (ad creative only)" if control_state_adcreative_only
                 else " (audience only)" if control_state_audience_only
                 else " (campaign control state only)" if control_state_campaign_only
+                else " (device only)" if control_state_device_only
+                else " (change history only)" if control_state_changes_only
                 else ""
             )
             logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, mode_suffix)
@@ -742,6 +802,14 @@ def run_sync(
                         geo_diff_list = compute_geo_targeting_diffs(prior_geo or [], geo_targeting_rows or [])
                         if geo_diff_list:
                             insert_geo_targeting_diff_daily(snapshot_date, customer_id, geo_diff_list, conn=conn)
+                    # Device targeting (ad group-level device modifiers + date of change)
+                    device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                    upsert_ad_group_device_modifier_daily(snapshot_date, customer_id, device_mod_rows or [], conn=conn)
+                    prior_dev = get_ad_group_device_modifier_for_date(customer_id, prior_date, conn=conn)
+                    if prior_dev or (device_mod_rows or []):
+                        dev_diff_list = compute_ad_group_device_modifier_diffs(prior_dev or [], device_mod_rows or [])
+                        if dev_diff_list:
+                            insert_ad_group_device_modifier_diff_daily(snapshot_date, customer_id, dev_diff_list, conn=conn)
                     continue
 
                 if control_state_adcreative_only:
@@ -771,6 +839,32 @@ def run_sync(
                             creative_diffs = compute_ad_creative_diffs(prior_creative, creative_rows)
                             if creative_diffs:
                                 insert_ad_creative_diff_daily(snapshot_date, customer_id, creative_diffs, conn=conn)
+                    continue
+
+                if control_state_changes_only:
+                    # Only change history (actions taken – e.g. by automated rules, UI, API); update last N days
+                    for d in range(CHANGE_EVENTS_DAYS):
+                        ev_date = snapshot_date - timedelta(days=(CHANGE_EVENTS_DAYS - 1 - d))
+                        ev_str = ev_date.isoformat()
+                        change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                        upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
+                    continue
+
+                if control_state_device_only:
+                    # Only device targeting (ad group device modifiers) snapshot + diff
+                    device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                    upsert_ad_group_device_modifier_daily(snapshot_date, customer_id, device_mod_rows or [], conn=conn)
+                    prior_dev = get_ad_group_device_modifier_for_date(customer_id, prior_date, conn=conn)
+                    if prior_dev or (device_mod_rows or []):
+                        dev_diff_list = compute_ad_group_device_modifier_diffs(prior_dev or [], device_mod_rows or [])
+                        if dev_diff_list:
+                            insert_ad_group_device_modifier_diff_daily(snapshot_date, customer_id, dev_diff_list, conn=conn)
+                    # Change history (actions taken); update last N days
+                    for d in range(CHANGE_EVENTS_DAYS):
+                        ev_date = snapshot_date - timedelta(days=(CHANGE_EVENTS_DAYS - 1 - d))
+                        ev_str = ev_date.isoformat()
+                        change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                        upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
                     continue
 
                 if control_state_audience_only:
@@ -855,6 +949,22 @@ def run_sync(
                         geo_diff_list = compute_geo_targeting_diffs(prior_geo, geo_targeting_rows)
                         if geo_diff_list:
                             insert_geo_targeting_diff_daily(snapshot_date, customer_id, geo_diff_list, conn=conn)
+
+                # Device targeting (ad group-level device modifiers + date of change)
+                device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                upsert_ad_group_device_modifier_daily(snapshot_date, customer_id, device_mod_rows or [], conn=conn)
+                prior_dev = get_ad_group_device_modifier_for_date(customer_id, prior_date, conn=conn)
+                if prior_dev or (device_mod_rows or []):
+                    dev_diff_list = compute_ad_group_device_modifier_diffs(prior_dev or [], device_mod_rows or [])
+                    if dev_diff_list:
+                        insert_ad_group_device_modifier_diff_daily(snapshot_date, customer_id, dev_diff_list, conn=conn)
+
+                # Change history (actions taken – e.g. by automated rules, UI, API); update last N days
+                for d in range(CHANGE_EVENTS_DAYS):
+                    ev_date = snapshot_date - timedelta(days=(CHANGE_EVENTS_DAYS - 1 - d))
+                    ev_str = ev_date.isoformat()
+                    change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                    upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
 
                 # TIER 2: ad group snapshot / change (status, add/remove, rename)
                 ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
@@ -966,7 +1076,7 @@ def run_sync(
                 logger.exception("PPC Flight Recorder sync failed for project=%s: %s", project, e)
                 raise
 
-        if control_state_only or control_state_adcreative_only or control_state_audience_only or control_state_campaign_only:
+        if control_state_only or control_state_adcreative_only or control_state_audience_only or control_state_campaign_only or control_state_device_only or control_state_changes_only:
             return
 
         if run_ga4:
@@ -1200,6 +1310,8 @@ def main() -> None:
     parser.add_argument("--control-state-adcreative-only", action="store_true", help="Update only ad creative (RSA) snapshot and diff (ppc_ad_creative_snapshot_daily, ppc_ad_creative_diff_daily)")
     parser.add_argument("--control-state-audience-only", action="store_true", help="Update only audience targeting snapshot and diff (ppc_audience_targeting_snapshot_daily, ppc_audience_targeting_diff_daily)")
     parser.add_argument("--control-state-campaign-only", action="store_true", help="Update only campaign control state (ppc_campaign_control_state_daily, ppc_campaign_control_diff_daily)")
+    parser.add_argument("--control-state-device-only", action="store_true", help="Update only device targeting (ppc_ad_group_device_modifier_daily, ppc_ad_group_device_modifier_diff_daily)")
+    parser.add_argument("--control-state-changes-only", action="store_true", help="Update only change history / actions taken (ppc_change_event_daily)")
     args = parser.parse_args()
 
     projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
@@ -1240,6 +1352,8 @@ def main() -> None:
         control_state_adcreative_only=args.control_state_adcreative_only,
         control_state_audience_only=args.control_state_audience_only,
         control_state_campaign_only=args.control_state_campaign_only,
+        control_state_device_only=args.control_state_device_only,
+        control_state_changes_only=args.control_state_changes_only,
     )
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 

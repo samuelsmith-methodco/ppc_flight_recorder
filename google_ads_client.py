@@ -2,11 +2,17 @@
 PPC Flight Recorder – Google Ads API client (standalone).
 """
 
+import json as _json
 import logging
 from typing import Any, Dict, List, Optional
 
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+
+try:
+    from google.protobuf.json_format import MessageToDict
+except ImportError:
+    MessageToDict = None  # type: ignore[misc, assignment]
 
 from config import (
     GOOGLE_ADS_CLIENT_ID,
@@ -25,6 +31,21 @@ def _safe_str(v: Any, max_len: int = 65535) -> Optional[str]:
     if v is None:
         return None
     s = str(v)
+    return s[:max_len] if len(s) > max_len else s
+
+
+def _change_resource_to_str(msg: Any, max_len: int = 65535) -> Optional[str]:
+    """Serialize old_resource/new_resource proto to string (JSON if available, else str)."""
+    if msg is None:
+        return None
+    try:
+        if MessageToDict is not None and hasattr(msg, "DESCRIPTOR"):
+            d = MessageToDict(msg, preserving_proto_field_name=True)
+            s = _json.dumps(d, default=str)
+        else:
+            s = str(msg)
+    except Exception:
+        s = str(msg)
     return s[:max_len] if len(s) > max_len else s
 
 
@@ -727,6 +748,140 @@ def fetch_campaign_control_state(
         logger.error("Google Ads API error: %s", ex)
         return ([], [])
     return (rows_out, geo_targeting_rows)
+
+
+def fetch_ad_group_device_modifiers(
+    project: str,
+    google_ads_filters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch ad group-level device bid modifiers (MOBILE, DESKTOP, TABLET). One row per (ad_group, device_type).
+    Returns list of dicts: campaign_id, ad_group_id, device_type, bid_modifier for ppc_ad_group_device_modifier_daily.
+    """
+    client = get_client()
+    customer_id_clean = _customer_id_clean(project)
+    ga_service = client.get_service("GoogleAdsService")
+    rows_out: List[Dict[str, Any]] = []
+    try:
+        query = (
+            "SELECT campaign.id, ad_group.id, ad_group_bid_modifier.device.type, ad_group_bid_modifier.bid_modifier "
+            "FROM ad_group_bid_modifier "
+            "WHERE ad_group.status != 'REMOVED' AND campaign.status != 'REMOVED'"
+        )
+        stream = ga_service.search_stream(customer_id=customer_id_clean, query=query)
+        for batch in stream:
+            for row in batch.results:
+                mod = getattr(row, "ad_group_bid_modifier", None)
+                if not mod:
+                    continue
+                device = getattr(mod, "device", None)
+                device_type = None
+                if device is not None:
+                    device_type = getattr(device, "type", None)
+                    if device_type is not None and hasattr(device_type, "name"):
+                        device_type = device_type.name
+                    elif device_type is not None:
+                        device_type = str(device_type)
+                if not device_type:
+                    continue
+                bid_mod = getattr(mod, "bid_modifier", None)
+                campaign_id = str(getattr(row.campaign, "id", "")) if getattr(row, "campaign", None) else ""
+                ad_group_id = str(getattr(row.ad_group, "id", "")) if getattr(row, "ad_group", None) else ""
+                if not campaign_id or not ad_group_id:
+                    continue
+                rows_out.append({
+                    "campaign_id": campaign_id,
+                    "ad_group_id": ad_group_id,
+                    "device_type": device_type[:32] if device_type else None,
+                    "bid_modifier": float(bid_mod) if bid_mod is not None else None,
+                })
+        logger.info("fetch_ad_group_device_modifiers: %s rows for project %s", len(rows_out), project)
+    except GoogleAdsException as e:
+        logger.warning("Ad group device modifiers query failed: %s", e)
+    return rows_out
+
+
+def fetch_change_events(
+    project: str,
+    snapshot_date: str,
+    google_ads_filters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch change history (ChangeEvent) for the given date. Captures 'actions taken' in the account (including by automated rules).
+    Returns list of dicts for ppc_change_event_daily. Only last 30 days are queryable; LIMIT 10000 per query.
+    snapshot_date: YYYY-MM-DD string for the day to fetch.
+    """
+    client = get_client()
+    customer_id_clean = _customer_id_clean(project)
+    ga_service = client.get_service("GoogleAdsService")
+    rows_out: List[Dict[str, Any]] = []
+    try:
+        start_ts = f"{snapshot_date} 00:00:00"
+        end_ts = f"{snapshot_date} 23:59:59"
+        query = (
+            "SELECT change_event.resource_name, change_event.change_date_time, change_event.change_resource_type, "
+            "change_event.change_resource_name, change_event.resource_change_operation, change_event.changed_fields, "
+            "change_event.user_email, change_event.client_type, change_event.old_resource, change_event.new_resource "
+            "FROM change_event "
+            f"WHERE change_event.change_date_time >= '{start_ts}' AND change_event.change_date_time <= '{end_ts}' "
+            "ORDER BY change_event.change_date_time "
+            "LIMIT 10000"
+        )
+        stream = ga_service.search_stream(customer_id=customer_id_clean, query=query)
+        for batch in stream:
+            for row in batch.results:
+                ev = getattr(row, "change_event", None)
+                if not ev:
+                    continue
+                rn = getattr(ev, "resource_name", None)
+                if not rn:
+                    continue
+                change_dt = getattr(ev, "change_date_time", None)
+                change_dt_str = str(change_dt) if change_dt else None
+                resource_type = getattr(ev, "change_resource_type", None)
+                if resource_type is not None and hasattr(resource_type, "name"):
+                    resource_type = resource_type.name
+                else:
+                    resource_type = str(resource_type) if resource_type else None
+                change_rn = getattr(ev, "change_resource_name", None)
+                change_rn_str = str(change_rn) if change_rn else None
+                op = getattr(ev, "resource_change_operation", None)
+                if op is not None and hasattr(op, "name"):
+                    op = op.name
+                else:
+                    op = str(op) if op else None
+                changed_f = getattr(ev, "changed_fields", None)
+                if changed_f and hasattr(changed_f, "paths"):
+                    changed_fields_str = ",".join(str(p) for p in changed_f.paths)[:4096]
+                elif changed_f and isinstance(changed_f, (list, tuple)):
+                    changed_fields_str = ",".join(str(p) for p in changed_f)[:4096]
+                else:
+                    changed_fields_str = str(changed_f)[:4096] if changed_f else None
+                user_email = getattr(ev, "user_email", None)
+                user_email = str(user_email)[:256] if user_email else None
+                client_type = getattr(ev, "client_type", None)
+                if client_type is not None and hasattr(client_type, "name"):
+                    client_type = client_type.name
+                else:
+                    client_type = str(client_type)[:64] if client_type else None
+                old_res = getattr(ev, "old_resource", None)
+                new_res = getattr(ev, "new_resource", None)
+                old_value = _change_resource_to_str(old_res)
+                new_value = _change_resource_to_str(new_res)
+                rows_out.append({
+                    "change_event_resource_name": str(rn)[:512],
+                    "change_date_time": change_dt_str[:48] if change_dt_str else None,
+                    "change_resource_type": resource_type[:64] if resource_type else None,
+                    "change_resource_name": change_rn_str[:512] if change_rn_str else None,
+                    "resource_change_operation": op[:32] if op else None,
+                    "changed_fields": changed_fields_str,
+                    "user_email": user_email,
+                    "client_type": client_type,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                })
+        logger.info("fetch_change_events: %s events for project %s date %s", len(rows_out), project, snapshot_date)
+    except GoogleAdsException as e:
+        logger.warning("Change event query failed: %s", e)
+    return rows_out
 
 
 def fetch_campaigns(
