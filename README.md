@@ -105,6 +105,9 @@ python sync.py --date 2026-02-10 --control-state-device-only
 
 # Change history only – actions taken (ppc_change_event_daily; e.g. by automated rules, UI, API)
 python sync.py --date 2026-02-10 --control-state-changes-only
+
+# Conversion definitions only (ppc_conversion_action_daily, ppc_conversion_action_diff_daily – conversion events, primary/secondary, attribution, lookback)
+python sync.py --date 2026-02-10 --control-state-conversions-only
 ```
 
 ### CLI reference (sync.py)
@@ -126,6 +129,7 @@ python sync.py --date 2026-02-10 --control-state-changes-only
 | `--control-state-audience-only` | Only audience targeting snapshot and diff tables |
 | `--control-state-device-only` | Only device targeting (ad group device modifiers) snapshot and diff tables |
 | `--control-state-changes-only` | Only change history / actions taken (ppc_change_event_daily) |
+| `--control-state-conversions-only` | Only conversion definitions (ppc_conversion_action_daily, ppc_conversion_action_diff_daily) |
 
 **Checking geo in Google Ads:** For locations and radius targeting, check **Campaigns** → campaign → **Locations**. Per-criterion geo (including presence/interest when available) is stored in `ppc_campaign_geo_targeting_daily`.
 

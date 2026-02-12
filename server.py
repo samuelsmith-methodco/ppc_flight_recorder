@@ -167,13 +167,14 @@ class SyncRequest(BaseModel):
     control_state_keyword_only: Optional[bool] = False  # If true, update only keyword and negative keyword snapshots/diffs
     control_state_adgroup_only: Optional[bool] = False  # If true, update only ad group snapshot and diff
     control_state_device_only: Optional[bool] = False  # If true, update only device targeting (ppc_ad_group_device_modifier_daily, _diff_daily)
+    control_state_conversions_only: Optional[bool] = False  # If true, update only conversion definitions (ppc_conversion_action_daily, _diff_daily)
 
 
 @app.post("/sync")
 def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     """
-    Run sync once (same as daily job: GA4 + diffs), or control-state-only, or control-state-keyword-only, or control-state-adgroup-only, or control-state-device-only.
-    Optional body: {"date": "YYYY-MM-DD", "control_state_only": true} or {"control_state_device_only": true} etc.
+    Run sync once (same as daily job: GA4 + diffs), or control-state-only, or control-state-keyword-only, or control-state-adgroup-only, or control-state-device-only, or control-state-conversions-only.
+    Optional body: {"date": "YYYY-MM-DD", "control_state_only": true} or {"control_state_device_only": true} or {"control_state_conversions_only": true} etc.
     """
     from sync import run_sync
 
@@ -189,16 +190,18 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     control_state_keyword_only = bool(body and body.control_state_keyword_only)
     control_state_adgroup_only = bool(body and body.control_state_adgroup_only)
     control_state_device_only = bool(body and body.control_state_device_only)
+    control_state_conversions_only = bool(body and body.control_state_conversions_only)
     projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
     try:
         run_sync(
             snapshot_date=snapshot_date,
             projects=projects,
-            run_ga4=not (control_state_only or control_state_keyword_only or control_state_adgroup_only or control_state_device_only),
+            run_ga4=not (control_state_only or control_state_keyword_only or control_state_adgroup_only or control_state_device_only or control_state_conversions_only),
             control_state_only=control_state_only,
             control_state_keyword_only=control_state_keyword_only,
             control_state_adgroup_only=control_state_adgroup_only,
             control_state_device_only=control_state_device_only,
+            control_state_conversions_only=control_state_conversions_only,
         )
         return {
             "status": "ok",
@@ -208,6 +211,7 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
             "control_state_keyword_only": control_state_keyword_only,
             "control_state_adgroup_only": control_state_adgroup_only,
             "control_state_device_only": control_state_device_only,
+            "control_state_conversions_only": control_state_conversions_only,
         }
     except Exception as e:
         logger.exception("Manual sync failed: %s", e)

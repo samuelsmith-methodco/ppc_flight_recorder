@@ -884,6 +884,89 @@ def fetch_change_events(
     return rows_out
 
 
+def fetch_conversion_actions(
+    project: str,
+    google_ads_filters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch conversion action definitions: list of conversion events, primary/secondary (include_in_conversions_metric),
+    attribution model, lookback windows, counting type. Returns list of dicts for ppc_conversion_action_daily.
+    """
+    client = get_client()
+    customer_id_clean = _customer_id_clean(project)
+    ga_service = client.get_service("GoogleAdsService")
+    rows_out: List[Dict[str, Any]] = []
+    try:
+        query = (
+            "SELECT conversion_action.resource_name, conversion_action.name, conversion_action.type, "
+            "conversion_action.status, conversion_action.category, conversion_action.include_in_conversions_metric, "
+            "conversion_action.attribution_model_settings.attribution_model, "
+            "conversion_action.click_through_lookback_window_days, conversion_action.counting_type "
+            "FROM conversion_action"
+        )
+        stream = ga_service.search_stream(customer_id=customer_id_clean, query=query)
+        for batch in stream:
+            for row in batch.results:
+                ca = getattr(row, "conversion_action", None)
+                if not ca:
+                    continue
+                rn = getattr(ca, "resource_name", None)
+                if not rn:
+                    continue
+                name = getattr(ca, "name", None)
+                name = str(name)[:512] if name else None
+                typ = getattr(ca, "type", None)
+                if typ is not None and hasattr(typ, "name"):
+                    typ = typ.name
+                else:
+                    typ = str(typ)[:64] if typ else None
+                status = getattr(ca, "status", None)
+                if status is not None and hasattr(status, "name"):
+                    status = status.name
+                else:
+                    status = str(status)[:32] if status else None
+                category = getattr(ca, "category", None)
+                if category is not None and hasattr(category, "name"):
+                    category = category.name
+                else:
+                    category = str(category)[:64] if category else None
+                include_primary = getattr(ca, "include_in_conversions_metric", None)
+                if include_primary is None:
+                    include_primary = None
+                else:
+                    include_primary = bool(include_primary)
+                attr_settings = getattr(ca, "attribution_model_settings", None)
+                attribution_model = None
+                if attr_settings:
+                    am = getattr(attr_settings, "attribution_model", None)
+                    if am is not None and hasattr(am, "name"):
+                        attribution_model = am.name
+                    else:
+                        attribution_model = str(am)[:64] if am else None
+                lookback_days = getattr(ca, "click_through_lookback_window_days", None)
+                if lookback_days is not None:
+                    lookback_days = int(lookback_days)
+                counting_type = getattr(ca, "counting_type", None)
+                if counting_type is not None and hasattr(counting_type, "name"):
+                    counting_type = counting_type.name
+                else:
+                    counting_type = str(counting_type)[:32] if counting_type else None
+                rows_out.append({
+                    "conversion_action_resource_name": str(rn)[:512],
+                    "name": name,
+                    "type": typ,
+                    "status": status,
+                    "category": category,
+                    "include_in_conversions_metric": include_primary,
+                    "attribution_model": attribution_model,
+                    "click_through_lookback_window_days": lookback_days,
+                    "counting_type": counting_type,
+                })
+        logger.info("fetch_conversion_actions: %s rows for project %s", len(rows_out), project)
+    except GoogleAdsException as e:
+        logger.warning("Conversion actions query failed: %s", e)
+    return rows_out
+
+
 def fetch_campaigns(
     start_date: str,
     end_date: str,

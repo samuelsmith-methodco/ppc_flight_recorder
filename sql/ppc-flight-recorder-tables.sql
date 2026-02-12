@@ -404,6 +404,36 @@ CREATE TABLE IF NOT EXISTS ppc_change_event_daily (
     PRIMARY KEY (change_date, customer_id, change_event_resource_name)
 );
 
+-- ppc_conversion_action_daily: Conversion definitions snapshot – conversion events list, primary/secondary (include_in_conversions_metric),
+--   attribution model, lookback window, counting type. One row per (snapshot_date, customer_id, conversion_action_resource_name).
+CREATE TABLE IF NOT EXISTS ppc_conversion_action_daily (
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    conversion_action_resource_name VARCHAR(512) NOT NULL,
+    name VARCHAR(512),
+    type VARCHAR(64),
+    status VARCHAR(32),
+    category VARCHAR(64),
+    include_in_conversions_metric BOOLEAN,
+    attribution_model VARCHAR(64),
+    click_through_lookback_window_days INTEGER,
+    counting_type VARCHAR(32),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, customer_id, conversion_action_resource_name)
+);
+
+-- ppc_conversion_action_diff_daily: Day-over-day conversion action definition changes (add/remove/field change).
+CREATE TABLE IF NOT EXISTS ppc_conversion_action_diff_daily (
+    snapshot_date DATE NOT NULL,
+    customer_id VARCHAR(128) NOT NULL,
+    conversion_action_resource_name VARCHAR(512) NOT NULL,
+    changed_metric_name VARCHAR(128) NOT NULL,
+    old_value VARCHAR(65535),
+    new_value VARCHAR(65535),
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, customer_id, conversion_action_resource_name, changed_metric_name)
+);
+
 -- ppc_keyword_outcomes_daily: Keyword-level performance metrics (one row per keyword per outcome_date).
 --   keyword_criterion_id: Google Ads criterion_id for the keyword. match_type: EXACT, PHRASE, BROAD.
 CREATE TABLE IF NOT EXISTS ppc_keyword_outcomes_daily (

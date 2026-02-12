@@ -919,6 +919,98 @@ def get_change_events_for_date(customer_id: str, change_date: date, conn: Option
     return df.to_dict("records")
 
 
+# ---- Conversion action (conversion definitions / attribution) snapshot / diff ----
+
+def upsert_conversion_actions_daily(
+    snapshot_date: date,
+    customer_id: str,
+    rows: List[Dict[str, Any]],
+    conn: Optional[Any] = None,
+) -> int:
+    """Replace all conversion action rows for (snapshot_date, customer_id) then insert the given rows."""
+    tbl = _table("ppc_conversion_action_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        if not rows:
+            conn.commit()
+            return
+        insert_sql = (
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, conversion_action_resource_name, name, type, status, category, include_in_conversions_metric, attribution_model, click_through_lookback_window_days, counting_type) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(conversion_action_resource_name)s, %(name)s, %(type)s, %(status)s, %(category)s, %(include_in_conversions_metric)s, %(attribution_model)s, %(click_through_lookback_window_days)s, %(counting_type)s)"
+        )
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "conversion_action_resource_name": _safe_str(r.get("conversion_action_resource_name"), 512),
+                "name": _safe_str(r.get("name"), 512),
+                "type": _safe_str(r.get("type"), 64),
+                "status": _safe_str(r.get("status"), 32),
+                "category": _safe_str(r.get("category"), 64),
+                "include_in_conversions_metric": r.get("include_in_conversions_metric"),
+                "attribution_model": _safe_str(r.get("attribution_model"), 64),
+                "click_through_lookback_window_days": r.get("click_through_lookback_window_days"),
+                "counting_type": _safe_str(r.get("counting_type"), 32),
+            }
+            for r in rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: upserted %s conversion_action rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(rows)
+
+
+def get_conversion_actions_for_date(customer_id: str, snapshot_date: date, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """Return conversion action rows for (customer_id, snapshot_date) from ppc_conversion_action_daily."""
+    tbl = _table("ppc_conversion_action_daily")
+
+    def do(conn):
+        q = f"SELECT snapshot_date, customer_id, conversion_action_resource_name, name, type, status, category, include_in_conversions_metric, attribution_model, click_through_lookback_window_days, counting_type FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
+
+    df = _run_with_conn(conn, do)
+    if df.empty:
+        return []
+    df.columns = [c.lower() for c in df.columns]
+    return df.to_dict("records")
+
+
+def insert_conversion_action_diff_daily(snapshot_date: date, customer_id: str, diff_rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
+    """Insert day-over-day conversion action definition changes. Replaces all rows for (snapshot_date, customer_id)."""
+    if not diff_rows:
+        return 0
+    tbl = _table("ppc_conversion_action_diff_daily")
+    date_str = snapshot_date.isoformat()
+
+    def do(conn):
+        execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
+        insert_sql = (
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, conversion_action_resource_name, changed_metric_name, old_value, new_value) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(conversion_action_resource_name)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
+        )
+        params_list = [
+            {
+                "snapshot_date": date_str,
+                "customer_id": customer_id,
+                "conversion_action_resource_name": _safe_str(r.get("conversion_action_resource_name"), 512),
+                "changed_metric_name": _safe_str(r.get("changed_metric_name"), 128),
+                "old_value": _safe_str(r.get("old_value"), 65535),
+                "new_value": _safe_str(r.get("new_value"), 65535),
+            }
+            for r in diff_rows
+        ]
+        execute_many(conn, insert_sql, params_list)
+        conn.commit()
+        logger.info("ppc_flight_recorder: inserted %s conversion_action diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
+
+    _run_with_conn(conn, do)
+    return len(diff_rows)
+
+
 def upsert_keyword_outcomes_daily(outcome_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
     if not rows:
         return 0

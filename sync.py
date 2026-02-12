@@ -32,6 +32,7 @@ from google_ads_client import (
     fetch_ad_group_device_modifiers,
     fetch_campaign_control_state,
     fetch_change_events,
+    fetch_conversion_actions,
     fetch_campaigns,
     fetch_campaigns_daily,
     fetch_keyword_criteria_snapshot,
@@ -46,6 +47,7 @@ from storage import (
     get_ad_group_snapshot_for_date,
     get_audience_targeting_snapshot_for_date,
     get_control_state_for_date,
+    get_conversion_actions_for_date,
     get_geo_targeting_for_date,
     get_ga4_acquisition_for_date,
     get_keyword_outcomes_for_date,
@@ -57,6 +59,7 @@ from storage import (
     insert_ad_group_device_modifier_diff_daily,
     insert_audience_targeting_diff_daily,
     insert_ad_group_outcomes_diff_daily,
+    insert_conversion_action_diff_daily,
     insert_control_diff_daily,
     insert_geo_targeting_diff_daily,
     insert_ga4_acquisition_diff_daily,
@@ -67,6 +70,7 @@ from storage import (
     upsert_ad_creative_snapshot_daily,
     upsert_ad_group_device_modifier_daily,
     upsert_change_events_daily,
+    upsert_conversion_actions_daily,
     upsert_ad_group_dims,
     upsert_ad_group_snapshot_daily,
     upsert_audience_targeting_snapshot_daily,
@@ -281,6 +285,55 @@ def compute_ad_group_device_modifier_diffs(prior: List[Dict[str, Any]], current:
                 "device_type": dtype,
                 "changed_metric_name": "device_modifier_removed",
                 "old_value": str(prev.get("bid_modifier")) if prev.get("bid_modifier") is not None else None,
+                "new_value": None,
+            })
+    return diffs
+
+
+CONVERSION_ACTION_DIFF_FIELDS = (
+    "name", "type", "status", "category", "include_in_conversions_metric",
+    "attribution_model", "click_through_lookback_window_days", "counting_type",
+)
+
+
+def compute_conversion_action_diffs(prior: List[Dict[str, Any]], current: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compare conversion action snapshots day-over-day; return rows for ppc_conversion_action_diff_daily.
+    Emits conversion_action_added, conversion_action_removed, and per-field value changes.
+    """
+    def _key(r):
+        return r.get("conversion_action_resource_name")
+
+    prior_by_key = {_key(r): r for r in prior if _key(r)}
+    cur_by_key = {_key(r): r for r in current if _key(r)}
+    diffs: List[Dict[str, Any]] = []
+    for rn, cur in cur_by_key.items():
+        prev = prior_by_key.get(rn)
+        if prev is None:
+            diffs.append({
+                "conversion_action_resource_name": rn,
+                "changed_metric_name": "conversion_action_added",
+                "old_value": None,
+                "new_value": cur.get("name") or rn,
+            })
+        else:
+            for field in CONVERSION_ACTION_DIFF_FIELDS:
+                ov, nv = prev.get(field), cur.get(field)
+                if ov == nv:
+                    continue
+                ov_str = str(ov) if ov is not None else None
+                nv_str = str(nv) if nv is not None else None
+                diffs.append({
+                    "conversion_action_resource_name": rn,
+                    "changed_metric_name": field,
+                    "old_value": ov_str,
+                    "new_value": nv_str,
+                })
+    for rn, prev in prior_by_key.items():
+        if rn not in cur_by_key:
+            diffs.append({
+                "conversion_action_resource_name": rn,
+                "changed_metric_name": "conversion_action_removed",
+                "old_value": prev.get("name") or rn,
                 "new_value": None,
             })
     return diffs
@@ -762,6 +815,7 @@ def run_sync(
     control_state_campaign_only: bool = False,
     control_state_device_only: bool = False,
     control_state_changes_only: bool = False,
+    control_state_conversions_only: bool = False,
 ) -> None:
     snapshot_str = snapshot_date.isoformat()
     prior_date = snapshot_date - timedelta(days=1)
@@ -779,6 +833,7 @@ def run_sync(
                 else " (campaign control state only)" if control_state_campaign_only
                 else " (device only)" if control_state_device_only
                 else " (change history only)" if control_state_changes_only
+                else " (conversions only)" if control_state_conversions_only
                 else ""
             )
             logger.info("Syncing PPC Flight Recorder for project=%s (customer_id=%s) date=%s%s", project, customer_id, snapshot_str, mode_suffix)
@@ -810,6 +865,14 @@ def run_sync(
                         dev_diff_list = compute_ad_group_device_modifier_diffs(prior_dev or [], device_mod_rows or [])
                         if dev_diff_list:
                             insert_ad_group_device_modifier_diff_daily(snapshot_date, customer_id, dev_diff_list, conn=conn)
+                    # Conversion definitions (conversion actions + attribution / lookback)
+                    conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                    upsert_conversion_actions_daily(snapshot_date, customer_id, conv_rows or [], conn=conn)
+                    prior_conv = get_conversion_actions_for_date(customer_id, prior_date, conn=conn)
+                    if prior_conv or (conv_rows or []):
+                        conv_diff_list = compute_conversion_action_diffs(prior_conv or [], conv_rows or [])
+                        if conv_diff_list:
+                            insert_conversion_action_diff_daily(snapshot_date, customer_id, conv_diff_list, conn=conn)
                     continue
 
                 if control_state_adcreative_only:
@@ -848,6 +911,17 @@ def run_sync(
                         ev_str = ev_date.isoformat()
                         change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
                         upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
+                    continue
+
+                if control_state_conversions_only:
+                    # Only conversion definitions (conversion actions + attribution / lookback)
+                    conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                    upsert_conversion_actions_daily(snapshot_date, customer_id, conv_rows or [], conn=conn)
+                    prior_conv = get_conversion_actions_for_date(customer_id, prior_date, conn=conn)
+                    if prior_conv or (conv_rows or []):
+                        conv_diff_list = compute_conversion_action_diffs(prior_conv or [], conv_rows or [])
+                        if conv_diff_list:
+                            insert_conversion_action_diff_daily(snapshot_date, customer_id, conv_diff_list, conn=conn)
                     continue
 
                 if control_state_device_only:
@@ -965,6 +1039,15 @@ def run_sync(
                     ev_str = ev_date.isoformat()
                     change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
                     upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
+
+                # Conversion definitions (conversion actions + attribution / lookback)
+                conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                upsert_conversion_actions_daily(snapshot_date, customer_id, conv_rows or [], conn=conn)
+                prior_conv = get_conversion_actions_for_date(customer_id, prior_date, conn=conn)
+                if prior_conv or (conv_rows or []):
+                    conv_diff_list = compute_conversion_action_diffs(prior_conv or [], conv_rows or [])
+                    if conv_diff_list:
+                        insert_conversion_action_diff_daily(snapshot_date, customer_id, conv_diff_list, conn=conn)
 
                 # TIER 2: ad group snapshot / change (status, add/remove, rename)
                 ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
@@ -1312,6 +1395,7 @@ def main() -> None:
     parser.add_argument("--control-state-campaign-only", action="store_true", help="Update only campaign control state (ppc_campaign_control_state_daily, ppc_campaign_control_diff_daily)")
     parser.add_argument("--control-state-device-only", action="store_true", help="Update only device targeting (ppc_ad_group_device_modifier_daily, ppc_ad_group_device_modifier_diff_daily)")
     parser.add_argument("--control-state-changes-only", action="store_true", help="Update only change history / actions taken (ppc_change_event_daily)")
+    parser.add_argument("--control-state-conversions-only", action="store_true", help="Update only conversion definitions (ppc_conversion_action_daily, ppc_conversion_action_diff_daily)")
     args = parser.parse_args()
 
     projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
@@ -1354,6 +1438,7 @@ def main() -> None:
         control_state_campaign_only=args.control_state_campaign_only,
         control_state_device_only=args.control_state_device_only,
         control_state_changes_only=args.control_state_changes_only,
+        control_state_conversions_only=args.control_state_conversions_only,
     )
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 
