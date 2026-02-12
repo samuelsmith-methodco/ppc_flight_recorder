@@ -890,15 +890,40 @@ def fetch_conversion_actions(
 ) -> List[Dict[str, Any]]:
     """Fetch conversion action definitions: list of conversion events, primary/secondary (include_in_conversions_metric),
     attribution model, lookback windows, counting type. Returns list of dicts for ppc_conversion_action_daily.
+    tracking_status comes from account-level customer.conversion_tracking_setting.conversion_tracking_status.
     """
     client = get_client()
     customer_id_clean = _customer_id_clean(project)
     ga_service = client.get_service("GoogleAdsService")
     rows_out: List[Dict[str, Any]] = []
     try:
+        # Account-level conversion tracking status (NOT_CONVERSION_TRACKED, CONVERSION_TRACKING_ENABLED, etc.)
+        account_tracking_status: Optional[str] = None
+        try:
+            cust_stream = ga_service.search_stream(
+                customer_id=customer_id_clean,
+                query="SELECT customer.conversion_tracking_setting.conversion_tracking_status FROM customer LIMIT 1",
+            )
+            for cust_batch in cust_stream:
+                for cust_row in cust_batch.results:
+                    c = getattr(cust_row, "customer", None)
+                    if c:
+                        cts = getattr(c, "conversion_tracking_setting", None)
+                        if cts:
+                            st = getattr(cts, "conversion_tracking_status", None)
+                            if st is not None and hasattr(st, "name"):
+                                account_tracking_status = st.name
+                            else:
+                                account_tracking_status = str(st)[:128] if st else None
+                    break
+                break
+        except GoogleAdsException as e:
+            logger.warning("Account conversion_tracking_status query failed: %s", e)
+
         query = (
             "SELECT conversion_action.resource_name, conversion_action.name, conversion_action.type, "
-            "conversion_action.status, conversion_action.category, conversion_action.include_in_conversions_metric, "
+            "conversion_action.status, conversion_action.category, conversion_action.origin, "
+            "conversion_action.include_in_conversions_metric, conversion_action.primary_for_goal, "
             "conversion_action.attribution_model_settings.attribution_model, "
             "conversion_action.click_through_lookback_window_days, conversion_action.counting_type "
             "FROM conversion_action"
@@ -924,6 +949,20 @@ def fetch_conversion_actions(
                     status = status.name
                 else:
                     status = str(status)[:32] if status else None
+                # conversion_source: where the conversion data comes from (e.g. WEBSITE, GOOGLE_ANALYTICS_4, UPLOAD)
+                origin = getattr(ca, "origin", None)
+                if origin is not None and hasattr(origin, "name"):
+                    conversion_source = origin.name
+                else:
+                    conversion_source = str(origin)[:256] if origin else None
+                # tracking_status: account-level from customer.conversion_tracking_setting.conversion_tracking_status
+                tracking_status = account_tracking_status[:128] if account_tracking_status else None
+                # action_optimization: Primary vs Secondary from primary_for_goal
+                primary_for_goal = getattr(ca, "primary_for_goal", None)
+                if primary_for_goal is not None:
+                    action_optimization = "Primary" if primary_for_goal else "Secondary"
+                else:
+                    action_optimization = None
                 category = getattr(ca, "category", None)
                 if category is not None and hasattr(category, "name"):
                     category = category.name
@@ -956,6 +995,9 @@ def fetch_conversion_actions(
                     "type": typ,
                     "status": status,
                     "category": category,
+                    "conversion_source": conversion_source[:256] if conversion_source else None,
+                    "tracking_status": tracking_status,
+                    "action_optimization": action_optimization[:64] if action_optimization else None,
                     "include_in_conversions_metric": include_primary,
                     "attribution_model": attribution_model,
                     "click_through_lookback_window_days": lookback_days,

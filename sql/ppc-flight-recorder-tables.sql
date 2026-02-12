@@ -406,6 +406,9 @@ CREATE TABLE IF NOT EXISTS ppc_change_event_daily (
 
 -- ppc_conversion_action_daily: Conversion definitions snapshot – conversion events list, primary/secondary (include_in_conversions_metric),
 --   attribution model, lookback window, counting type. One row per (snapshot_date, customer_id, conversion_action_resource_name).
+--   conversion_source: Where the conversion data comes from (e.g. Website (Google Analytics (GA4)), Store, Google hosted).
+--   tracking_status: e.g. Active, Has improvements.
+--   action_optimization: Primary or Secondary (optimization goal priority).
 CREATE TABLE IF NOT EXISTS ppc_conversion_action_daily (
     snapshot_date DATE NOT NULL,
     customer_id VARCHAR(128) NOT NULL,
@@ -414,6 +417,9 @@ CREATE TABLE IF NOT EXISTS ppc_conversion_action_daily (
     type VARCHAR(64),
     status VARCHAR(32),
     category VARCHAR(64),
+    conversion_source VARCHAR(256),
+    tracking_status VARCHAR(128),
+    action_optimization VARCHAR(64),
     include_in_conversions_metric BOOLEAN,
     attribution_model VARCHAR(64),
     click_through_lookback_window_days INTEGER,
@@ -421,6 +427,11 @@ CREATE TABLE IF NOT EXISTS ppc_conversion_action_daily (
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (snapshot_date, customer_id, conversion_action_resource_name)
 );
+
+-- Migration: Add conversion source, tracking status, action optimization (run if table exists without them).
+ALTER TABLE ppc_conversion_action_daily ADD COLUMN IF NOT EXISTS conversion_source VARCHAR(256);
+ALTER TABLE ppc_conversion_action_daily ADD COLUMN IF NOT EXISTS tracking_status VARCHAR(128);
+ALTER TABLE ppc_conversion_action_daily ADD COLUMN IF NOT EXISTS action_optimization VARCHAR(64);
 
 -- ppc_conversion_action_diff_daily: Day-over-day conversion action definition changes (add/remove/field change).
 CREATE TABLE IF NOT EXISTS ppc_conversion_action_diff_daily (

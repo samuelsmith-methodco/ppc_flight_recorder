@@ -937,8 +937,8 @@ def upsert_conversion_actions_daily(
             conn.commit()
             return
         insert_sql = (
-            f"INSERT INTO {tbl} (snapshot_date, customer_id, conversion_action_resource_name, name, type, status, category, include_in_conversions_metric, attribution_model, click_through_lookback_window_days, counting_type) "
-            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(conversion_action_resource_name)s, %(name)s, %(type)s, %(status)s, %(category)s, %(include_in_conversions_metric)s, %(attribution_model)s, %(click_through_lookback_window_days)s, %(counting_type)s)"
+            f"INSERT INTO {tbl} (snapshot_date, customer_id, conversion_action_resource_name, name, type, status, category, conversion_source, tracking_status, action_optimization, include_in_conversions_metric, attribution_model, click_through_lookback_window_days, counting_type) "
+            "VALUES (%(snapshot_date)s::DATE, %(customer_id)s, %(conversion_action_resource_name)s, %(name)s, %(type)s, %(status)s, %(category)s, %(conversion_source)s, %(tracking_status)s, %(action_optimization)s, %(include_in_conversions_metric)s, %(attribution_model)s, %(click_through_lookback_window_days)s, %(counting_type)s)"
         )
         params_list = [
             {
@@ -949,6 +949,9 @@ def upsert_conversion_actions_daily(
                 "type": _safe_str(r.get("type"), 64),
                 "status": _safe_str(r.get("status"), 32),
                 "category": _safe_str(r.get("category"), 64),
+                "conversion_source": _safe_str(r.get("conversion_source"), 256),
+                "tracking_status": _safe_str(r.get("tracking_status"), 128),
+                "action_optimization": _safe_str(r.get("action_optimization"), 64),
                 "include_in_conversions_metric": r.get("include_in_conversions_metric"),
                 "attribution_model": _safe_str(r.get("attribution_model"), 64),
                 "click_through_lookback_window_days": r.get("click_through_lookback_window_days"),
@@ -969,7 +972,7 @@ def get_conversion_actions_for_date(customer_id: str, snapshot_date: date, conn:
     tbl = _table("ppc_conversion_action_daily")
 
     def do(conn):
-        q = f"SELECT snapshot_date, customer_id, conversion_action_resource_name, name, type, status, category, include_in_conversions_metric, attribution_model, click_through_lookback_window_days, counting_type FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        q = f"SELECT snapshot_date, customer_id, conversion_action_resource_name, name, type, status, category, conversion_source, tracking_status, action_optimization, include_in_conversions_metric, attribution_model, click_through_lookback_window_days, counting_type FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
         return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
 
     df = _run_with_conn(conn, do)

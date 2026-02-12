@@ -291,8 +291,8 @@ def compute_ad_group_device_modifier_diffs(prior: List[Dict[str, Any]], current:
 
 
 CONVERSION_ACTION_DIFF_FIELDS = (
-    "name", "type", "status", "category", "include_in_conversions_metric",
-    "attribution_model", "click_through_lookback_window_days", "counting_type",
+    "name", "type", "status", "category", "conversion_source", "tracking_status", "action_optimization",
+    "include_in_conversions_metric", "attribution_model", "click_through_lookback_window_days", "counting_type",
 )
 
 
