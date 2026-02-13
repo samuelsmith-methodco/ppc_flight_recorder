@@ -27,6 +27,22 @@ def _safe_str(v: Any, max_len: int = 65535) -> Optional[str]:
     return s[:max_len] if len(s) > max_len else s
 
 
+def _normalize_diff_value(v: Any, max_len: int = 65535) -> Optional[str]:
+    """For old_value/new_value in diff tables: treat None and NaN as None, never persist 'nan' string."""
+    if v is None:
+        return None
+    try:
+        if hasattr(v, "__float__") and float(v) != float(v):  # NaN
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip().lower()
+    if s in ("nan", "none", "<na>"):
+        return None
+    out = _safe_str(v, max_len)
+    return None if out and out.strip().lower() in ("nan", "none", "<na>") else out
+
+
 def _run_with_conn(conn: Optional[Any], use_connection):
     """If conn is provided, run use_connection(conn) and return its result. Else open get_connection() and run inside it."""
     if conn is not None:
@@ -268,7 +284,7 @@ def insert_outcomes_diff_daily(outcome_date: date, customer_id: str, diff_rows: 
     def do(conn):
         execute(conn, f"DELETE FROM {tbl} WHERE outcome_date = %(outcome_date)s::DATE AND customer_id = %(customer_id)s", {"outcome_date": date_str, "customer_id": customer_id})
         insert_sql = f"INSERT INTO {tbl} (campaign_id, outcome_date, customer_id, changed_metric_name, old_value, new_value) VALUES (%(campaign_id)s, %(outcome_date)s::DATE, %(customer_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
-        params_list = [{"campaign_id": r["campaign_id"], "outcome_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _safe_str(r.get("old_value"), 65535), "new_value": _safe_str(r.get("new_value"), 65535)} for r in diff_rows]
+        params_list = [{"campaign_id": r["campaign_id"], "outcome_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _normalize_diff_value(r.get("old_value"), 65535), "new_value": _normalize_diff_value(r.get("new_value"), 65535)} for r in diff_rows]
         execute_many(conn, insert_sql, params_list)
         conn.commit()
         logger.info("ppc_flight_recorder: inserted %s outcome diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
@@ -297,7 +313,7 @@ def insert_control_diff_daily(snapshot_date: date, customer_id: str, diff_rows: 
     def do(conn):
         execute(conn, f"DELETE FROM {tbl} WHERE snapshot_date = %(snapshot_date)s::DATE AND customer_id = %(customer_id)s", {"snapshot_date": date_str, "customer_id": customer_id})
         insert_sql = f"INSERT INTO {tbl} (campaign_id, snapshot_date, customer_id, changed_metric_name, old_value, new_value) VALUES (%(campaign_id)s, %(snapshot_date)s::DATE, %(customer_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
-        params_list = [{"campaign_id": r["campaign_id"], "snapshot_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _safe_str(r.get("old_value"), 65535), "new_value": _safe_str(r.get("new_value"), 65535)} for r in diff_rows]
+        params_list = [{"campaign_id": r["campaign_id"], "snapshot_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _normalize_diff_value(r.get("old_value"), 65535), "new_value": _normalize_diff_value(r.get("new_value"), 65535)} for r in diff_rows]
         execute_many(conn, insert_sql, params_list)
         conn.commit()
         logger.info("ppc_flight_recorder: inserted %s control_state diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
@@ -399,8 +415,8 @@ def insert_geo_targeting_diff_daily(snapshot_date: date, customer_id: str, diff_
                 "criterion_type": _safe_str(r.get("criterion_type"), 32),
                 "criterion_id": _safe_str(r.get("criterion_id"), 64),
                 "changed_metric_name": _safe_str(r["changed_metric_name"], 128),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in diff_rows
         ]
@@ -526,7 +542,7 @@ def insert_ga4_acquisition_diff_daily(acquisition_date: date, project: str, diff
     def do(conn):
         execute(conn, f"DELETE FROM {tbl} WHERE acquisition_date = %(acquisition_date)s::DATE AND project = %(project)s", {"acquisition_date": date_str, "project": project})
         insert_sql = f"INSERT INTO {tbl} (project, acquisition_date, report_type, dimension_type, dimension_value, changed_metric_name, old_value, new_value) VALUES (%(project)s, %(acquisition_date)s::DATE, %(report_type)s, %(dimension_type)s, %(dimension_value)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
-        params_list = [{"project": project, "acquisition_date": date_str, "report_type": r["report_type"], "dimension_type": r["dimension_type"], "dimension_value": _safe_str(r.get("dimension_value"), 512), "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _safe_str(r.get("old_value"), 65535), "new_value": _safe_str(r.get("new_value"), 65535)} for r in diff_rows]
+        params_list = [{"project": project, "acquisition_date": date_str, "report_type": r["report_type"], "dimension_type": r["dimension_type"], "dimension_value": _safe_str(r.get("dimension_value"), 512), "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _normalize_diff_value(r.get("old_value"), 65535), "new_value": _normalize_diff_value(r.get("new_value"), 65535)} for r in diff_rows]
         execute_many(conn, insert_sql, params_list)
         conn.commit()
         logger.info("ppc_flight_recorder: inserted %s ga4_acquisition diff rows for %s @ %s", len(diff_rows), project, date_str)
@@ -671,7 +687,7 @@ def insert_ad_group_outcomes_diff_daily(outcome_date: date, customer_id: str, di
     def do(conn):
         execute(conn, f"DELETE FROM {tbl} WHERE outcome_date = %(outcome_date)s::DATE AND customer_id = %(customer_id)s", {"outcome_date": date_str, "customer_id": customer_id})
         insert_sql = f"INSERT INTO {tbl} (ad_group_id, campaign_id, outcome_date, customer_id, changed_metric_name, old_value, new_value) VALUES (%(ad_group_id)s, %(campaign_id)s, %(outcome_date)s::DATE, %(customer_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
-        params_list = [{"ad_group_id": r["ad_group_id"], "campaign_id": r["campaign_id"], "outcome_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _safe_str(r.get("old_value"), 65535), "new_value": _safe_str(r.get("new_value"), 65535)} for r in diff_rows]
+        params_list = [{"ad_group_id": r["ad_group_id"], "campaign_id": r["campaign_id"], "outcome_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _normalize_diff_value(r.get("old_value"), 65535), "new_value": _normalize_diff_value(r.get("new_value"), 65535)} for r in diff_rows]
         execute_many(conn, insert_sql, params_list)
         conn.commit()
         logger.info("ppc_flight_recorder: inserted %s ad_group outcome diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
@@ -756,8 +772,8 @@ def insert_ad_group_change_daily(snapshot_date: date, customer_id: str, rows: Li
                 "change_type": _safe_str(r.get("change_type"), 32),
                 "ad_group_name": _safe_str(r.get("ad_group_name"), 512),
                 "status": _safe_str(r.get("status"), 32),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in rows
         ]
@@ -845,8 +861,8 @@ def insert_ad_group_device_modifier_diff_daily(snapshot_date: date, customer_id:
                 "ad_group_id": r["ad_group_id"],
                 "device_type": _safe_str(r.get("device_type"), 32),
                 "changed_metric_name": _safe_str(r["changed_metric_name"], 128),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in diff_rows
         ]
@@ -891,8 +907,8 @@ def upsert_change_events_daily(
                 "changed_fields": _safe_str(r.get("changed_fields"), 4096),
                 "user_email": _safe_str(r.get("user_email"), 256),
                 "client_type": _safe_str(r.get("client_type"), 64),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in rows
         ]
@@ -1001,8 +1017,8 @@ def insert_conversion_action_diff_daily(snapshot_date: date, customer_id: str, d
                 "customer_id": customer_id,
                 "conversion_action_resource_name": _safe_str(r.get("conversion_action_resource_name"), 512),
                 "changed_metric_name": _safe_str(r.get("changed_metric_name"), 128),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in diff_rows
         ]
@@ -1154,7 +1170,7 @@ def insert_keyword_outcomes_diff_daily(outcome_date: date, customer_id: str, dif
     def do(conn):
         execute(conn, f"DELETE FROM {tbl} WHERE outcome_date = %(outcome_date)s::DATE AND customer_id = %(customer_id)s", {"outcome_date": date_str, "customer_id": customer_id})
         insert_sql = f"INSERT INTO {tbl} (keyword_criterion_id, outcome_date, customer_id, changed_metric_name, old_value, new_value) VALUES (%(keyword_criterion_id)s, %(outcome_date)s::DATE, %(customer_id)s, %(changed_metric_name)s, %(old_value)s, %(new_value)s)"
-        params_list = [{"keyword_criterion_id": r["keyword_criterion_id"], "outcome_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _safe_str(r.get("old_value"), 65535), "new_value": _safe_str(r.get("new_value"), 65535)} for r in diff_rows]
+        params_list = [{"keyword_criterion_id": r["keyword_criterion_id"], "outcome_date": date_str, "customer_id": customer_id, "changed_metric_name": _safe_str(r["changed_metric_name"], 128), "old_value": _normalize_diff_value(r.get("old_value"), 65535), "new_value": _normalize_diff_value(r.get("new_value"), 65535)} for r in diff_rows]
         execute_many(conn, insert_sql, params_list)
         conn.commit()
         logger.info("ppc_flight_recorder: inserted %s keyword outcome diff rows for customer_id=%s @ %s", len(diff_rows), customer_id, date_str)
@@ -1328,8 +1344,8 @@ def insert_keyword_change_daily(snapshot_date: date, customer_id: str, rows: Lis
                 "change_type": _safe_str(r.get("change_type"), 32),
                 "keyword_text": _safe_str(r.get("keyword_text"), 1024),
                 "match_type": _safe_str(r.get("match_type"), 32),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in rows
         ]
@@ -1443,8 +1459,8 @@ def insert_negative_keyword_diff_daily(snapshot_date: date, customer_id: str, ro
                 "change_type": _safe_str(r.get("change_type"), 32),
                 "keyword_text": _safe_str(r.get("keyword_text"), 1024),
                 "match_type": _safe_str(r.get("match_type"), 32),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in rows
         ]
@@ -1538,8 +1554,8 @@ def insert_ad_creative_diff_daily(snapshot_date: date, customer_id: str, rows: L
                 "ad_group_id": r["ad_group_id"],
                 "ad_id": r["ad_id"],
                 "changed_metric_name": _safe_str(r["changed_metric_name"], 128),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
             }
             for r in rows
         ]
@@ -1658,8 +1674,8 @@ def insert_audience_targeting_diff_daily(snapshot_date: date, customer_id: str, 
                 "audience_id": _safe_str(r.get("audience_id"), 256),
                 "audience_name": _safe_str(r.get("audience_name"), 512),
                 "targeting_mode": _safe_str(r.get("targeting_mode"), 32),
-                "old_value": _safe_str(r.get("old_value"), 65535),
-                "new_value": _safe_str(r.get("new_value"), 65535),
+                "old_value": _normalize_diff_value(r.get("old_value"), 65535),
+                "new_value": _normalize_diff_value(r.get("new_value"), 65535),
                 "old_size": r.get("old_size"),
                 "new_size": r.get("new_size"),
             }

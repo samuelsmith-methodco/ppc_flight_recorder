@@ -15,6 +15,7 @@ So we have two diff tables for Google Ads (control + outcomes) and one for GA4.
 """
 
 import argparse
+import math
 import logging
 import sys
 import time
@@ -127,6 +128,84 @@ KEYWORD_UPSERT_BATCH_SIZE = 1000   # Batch size for keyword outcomes upserts
 CHANGE_EVENTS_DAYS = 7
 
 
+def _diff_value_empty(v: Any) -> bool:
+    """True if value is considered empty for diff (None, NaN, pd.NA, etc.). Do not emit diff when both old/new are empty."""
+    if v is None:
+        return True
+    try:
+        if isinstance(v, float) and math.isnan(v):
+            return True
+    except Exception:
+        pass
+    try:
+        f = float(v)
+        if math.isnan(f):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _diff_values_equal(ov: Any, nv: Any) -> bool:
+    """True if old and new are considered equal for diff (no change). Avoids nan vs null, 1.15 vs 1.150000, True vs 'True'."""
+    if _diff_value_empty(ov) and _diff_value_empty(nv):
+        return True
+    if _diff_value_empty(ov) or _diff_value_empty(nv):
+        return False
+    try:
+        o_f, n_f = float(ov), float(nv)
+        if math.isnan(o_f) and math.isnan(n_f):
+            return True
+        if math.isnan(o_f) or math.isnan(n_f):
+            return False
+        return math.isclose(o_f, n_f, rel_tol=1e-9, abs_tol=1e-12) or o_f == n_f
+    except (TypeError, ValueError):
+        pass
+    # Boolean-like: True/False/1/0/"True"/"False"/"true"/"false"
+    try:
+        o_b = ov in (True, 1, "True", "true", "1") if type(ov) in (bool, int, str) else False
+        n_b = nv in (True, 1, "True", "true", "1") if type(nv) in (bool, int, str) else False
+        if type(ov) in (bool, int, str) and type(nv) in (bool, int, str):
+            if str(ov).lower() in ("true", "false", "1", "0") and str(nv).lower() in ("true", "false", "1", "0"):
+                return o_b == n_b
+    except Exception:
+        pass
+    # String-like: normalize whitespace
+    try:
+        if ov is not None and nv is not None:
+            os, ns = str(ov).strip(), str(nv).strip()
+            if os == ns:
+                return True
+    except Exception:
+        pass
+    return ov == nv
+
+
+def _format_diff_value(v: Any, max_len: int = 65535) -> Optional[str]:
+    """Consistent string for old_value/new_value in diff tables. None/NaN -> None; numbers normalized to avoid 1.15 vs 1.150000."""
+    if v is None:
+        return None
+    try:
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except Exception:
+        pass
+    try:
+        f = float(v)
+        if math.isnan(f):
+            return None
+        # Normalize numeric string (strip trailing zeros) so 1.15 and 1.150000 match
+        if isinstance(v, int) or (isinstance(v, float) and v == int(v)):
+            s = str(int(f))
+        else:
+            s = repr(f).rstrip("0").rstrip(".") if "." in repr(f) else repr(f)
+        return s[:max_len] if len(s) > max_len else s
+    except (TypeError, ValueError):
+        pass
+    s = str(v)
+    return s[:max_len] if len(s) > max_len else s
+
+
 def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "campaign_id": row.get("campaign_id"), "campaign_name": row.get("campaign_name"),
@@ -157,7 +236,7 @@ def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Compare control state metrics day-over-day; return list for ppc_campaign_control_diff_daily.
-    Only adds a row when the value has changed (old_value != new_value).
+    Only adds a row when the value has actually changed (normalized comparison); never adds when old_value and new_value would be the same.
     """
     prior_by_cid = {r["campaign_id"]: r for r in prior}
     diffs = []
@@ -168,15 +247,18 @@ def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[
             continue
         for field in CONTROL_STATE_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
-            if ov is None and nv is None:
+            if _diff_values_equal(ov, nv):
                 continue
-            if ov == nv:
+            old_str = _format_diff_value(ov)
+            new_str = _format_diff_value(nv)
+            # Only add when stored values would differ (avoid same-value rows in table)
+            if old_str == new_str:
                 continue
             diffs.append({
                 "campaign_id": cid,
                 "changed_metric_name": field,
-                "old_value": str(ov) if ov is not None else None,
-                "new_value": str(nv) if nv is not None else None,
+                "old_value": old_str,
+                "new_value": new_str,
             })
     return diffs
 
@@ -228,17 +310,15 @@ def compute_geo_targeting_diffs(prior: List[Dict[str, Any]], current: List[Dict[
             continue
         for field in GEO_TARGETING_METRIC_FIELDS:
             ov, nv = prev.get(field), r.get(field)
-            if ov is None and nv is None:
-                continue
-            if ov == nv:
+            if _diff_values_equal(ov, nv):
                 continue
             diffs.append({
                 "campaign_id": r.get("campaign_id"),
                 "criterion_type": r.get("criterion_type"),
                 "criterion_id": r.get("criterion_id"),
                 "changed_metric_name": field,
-                "old_value": str(ov) if ov is not None else None,
-                "new_value": str(nv) if nv is not None else None,
+                "old_value": _format_diff_value(ov),
+                "new_value": _format_diff_value(nv),
             })
     return diffs
 
@@ -263,18 +343,18 @@ def compute_ad_group_device_modifier_diffs(prior: List[Dict[str, Any]], current:
                 "device_type": dtype,
                 "changed_metric_name": "device_modifier_added",
                 "old_value": None,
-                "new_value": str(cur.get("bid_modifier")) if cur.get("bid_modifier") is not None else None,
+                "new_value": _format_diff_value(cur.get("bid_modifier")),
             })
         else:
             ov, nv = prev.get("bid_modifier"), cur.get("bid_modifier")
-            if ov != nv:
+            if not _diff_values_equal(ov, nv):
                 diffs.append({
                     "campaign_id": cid,
                     "ad_group_id": agid,
                     "device_type": dtype,
                     "changed_metric_name": "bid_modifier",
-                    "old_value": str(ov) if ov is not None else None,
-                    "new_value": str(nv) if nv is not None else None,
+                    "old_value": _format_diff_value(ov),
+                    "new_value": _format_diff_value(nv),
                 })
     for k, prev in prior_by_key.items():
         if k not in cur_by_key:
@@ -284,7 +364,7 @@ def compute_ad_group_device_modifier_diffs(prior: List[Dict[str, Any]], current:
                 "ad_group_id": agid,
                 "device_type": dtype,
                 "changed_metric_name": "device_modifier_removed",
-                "old_value": str(prev.get("bid_modifier")) if prev.get("bid_modifier") is not None else None,
+                "old_value": _format_diff_value(prev.get("bid_modifier")),
                 "new_value": None,
             })
     return diffs
@@ -313,27 +393,25 @@ def compute_conversion_action_diffs(prior: List[Dict[str, Any]], current: List[D
                 "conversion_action_resource_name": rn,
                 "changed_metric_name": "conversion_action_added",
                 "old_value": None,
-                "new_value": cur.get("name") or rn,
+                "new_value": _format_diff_value(cur.get("name") or rn),
             })
         else:
             for field in CONVERSION_ACTION_DIFF_FIELDS:
                 ov, nv = prev.get(field), cur.get(field)
-                if ov == nv:
+                if _diff_values_equal(ov, nv):
                     continue
-                ov_str = str(ov) if ov is not None else None
-                nv_str = str(nv) if nv is not None else None
                 diffs.append({
                     "conversion_action_resource_name": rn,
                     "changed_metric_name": field,
-                    "old_value": ov_str,
-                    "new_value": nv_str,
+                    "old_value": _format_diff_value(ov),
+                    "new_value": _format_diff_value(nv),
                 })
     for rn, prev in prior_by_key.items():
         if rn not in cur_by_key:
             diffs.append({
                 "conversion_action_resource_name": rn,
                 "changed_metric_name": "conversion_action_removed",
-                "old_value": prev.get("name") or rn,
+                "old_value": _format_diff_value(prev.get("name") or rn),
                 "new_value": None,
             })
     return diffs
@@ -373,10 +451,14 @@ def compute_outcome_diffs(current: List[Dict[str, Any]], prior: List[Dict[str, A
             continue
         for field in OUTCOME_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
-            if ov is None and nv is None:
+            if _diff_values_equal(ov, nv):
                 continue
-            if ov != nv:
-                diffs.append({"campaign_id": cid, "changed_metric_name": field, "old_value": str(ov) if ov is not None else None, "new_value": str(nv) if nv is not None else None})
+            diffs.append({
+                "campaign_id": cid,
+                "changed_metric_name": field,
+                "old_value": _format_diff_value(ov),
+                "new_value": _format_diff_value(nv),
+            })
     return diffs
 
 
@@ -413,16 +495,15 @@ def compute_ad_group_outcome_diffs(current: List[Dict[str, Any]], prior: List[Di
             continue
         for field in OUTCOME_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
-            if ov is None and nv is None:
+            if _diff_values_equal(ov, nv):
                 continue
-            if ov != nv:
-                diffs.append({
-                    "ad_group_id": agid,
-                    "campaign_id": cur.get("campaign_id"),
-                    "changed_metric_name": field,
-                    "old_value": str(ov) if ov is not None else None,
-                    "new_value": str(nv) if nv is not None else None,
-                })
+            diffs.append({
+                "ad_group_id": agid,
+                "campaign_id": cur.get("campaign_id"),
+                "changed_metric_name": field,
+                "old_value": _format_diff_value(ov),
+                "new_value": _format_diff_value(nv),
+            })
     return diffs
 
 
@@ -457,15 +538,14 @@ def compute_keyword_outcome_diffs(current: List[Dict[str, Any]], prior: List[Dic
             continue
         for field in OUTCOME_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
-            if ov is None and nv is None:
+            if _diff_values_equal(ov, nv):
                 continue
-            if ov != nv:
-                diffs.append({
-                    "keyword_criterion_id": kid,
-                    "changed_metric_name": field,
-                    "old_value": str(ov) if ov is not None else None,
-                    "new_value": str(nv) if nv is not None else None,
-                })
+            diffs.append({
+                "keyword_criterion_id": kid,
+                "changed_metric_name": field,
+                "old_value": _format_diff_value(ov),
+                "new_value": _format_diff_value(nv),
+            })
     return diffs
 
 
@@ -481,13 +561,14 @@ def compute_ga4_acquisition_diffs(current: List[Dict[str, Any]], prior: List[Dic
             continue
         for field in GA4_ACQUISITION_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
-            if ov is None and nv is None:
+            if _diff_values_equal(ov, nv):
                 continue
-            if ov != nv:
-                diffs.append({
-                    "report_type": cur.get("report_type"), "dimension_type": cur.get("dimension_type"), "dimension_value": cur.get("dimension_value"),
-                    "changed_metric_name": field, "old_value": str(ov) if ov is not None else None, "new_value": str(nv) if nv is not None else None,
-                })
+            diffs.append({
+                "report_type": cur.get("report_type"), "dimension_type": cur.get("dimension_type"), "dimension_value": cur.get("dimension_value"),
+                "changed_metric_name": field,
+                "old_value": _format_diff_value(ov),
+                "new_value": _format_diff_value(nv),
+            })
     return diffs
 
 
@@ -538,8 +619,8 @@ def compute_ad_group_changes(prior: List[Dict[str, Any]], current: List[Dict[str
                 "change_type": "UPDATED",
                 "ad_group_name": r.get("ad_group_name"),
                 "status": r.get("status"),
-                "old_value": f"status={prev.get('status')}; name={prev.get('ad_group_name') or ''}",
-                "new_value": f"status={r.get('status')}; name={r.get('ad_group_name') or ''}",
+                "old_value": f"status={_format_diff_value(prev.get('status')) or ''}; name={_format_diff_value(prev.get('ad_group_name')) or ''}",
+                "new_value": f"status={_format_diff_value(r.get('status')) or ''}; name={_format_diff_value(r.get('ad_group_name')) or ''}",
             })
         elif status_changed:
             changes.append({
@@ -548,8 +629,8 @@ def compute_ad_group_changes(prior: List[Dict[str, Any]], current: List[Dict[str
                 "change_type": "STATUS_CHANGED",
                 "ad_group_name": r.get("ad_group_name"),
                 "status": r.get("status"),
-                "old_value": prev.get("status"),
-                "new_value": r.get("status"),
+                "old_value": _format_diff_value(prev.get("status")),
+                "new_value": _format_diff_value(r.get("status")),
             })
         elif name_changed:
             changes.append({
@@ -558,8 +639,8 @@ def compute_ad_group_changes(prior: List[Dict[str, Any]], current: List[Dict[str
                 "change_type": "RENAMED",
                 "ad_group_name": r.get("ad_group_name"),
                 "status": r.get("status"),
-                "old_value": prev.get("ad_group_name"),
-                "new_value": r.get("ad_group_name"),
+                "old_value": _format_diff_value(prev.get("ad_group_name")),
+                "new_value": _format_diff_value(r.get("ad_group_name")),
             })
     return changes
 
@@ -584,7 +665,7 @@ def compute_keyword_changes(prior: List[Dict[str, Any]], current: List[Dict[str,
                 "keyword_text": r.get("keyword_text"),
                 "match_type": r.get("match_type"),
                 "old_value": None,
-                "new_value": r.get("match_type"),
+                "new_value": _format_diff_value(r.get("match_type")),
             })
     for r in prior:
         k = _keyword_snapshot_key(r)
@@ -596,7 +677,7 @@ def compute_keyword_changes(prior: List[Dict[str, Any]], current: List[Dict[str,
                 "change_type": "REMOVED",
                 "keyword_text": r.get("keyword_text"),
                 "match_type": r.get("match_type"),
-                "old_value": r.get("match_type"),
+                "old_value": _format_diff_value(r.get("match_type")),
                 "new_value": None,
             })
     for r in current:
@@ -610,8 +691,8 @@ def compute_keyword_changes(prior: List[Dict[str, Any]], current: List[Dict[str,
                 "change_type": "MATCH_TYPE_CHANGED",
                 "keyword_text": r.get("keyword_text"),
                 "match_type": r.get("match_type"),
-                "old_value": prev.get("match_type"),
-                "new_value": r.get("match_type"),
+                "old_value": _format_diff_value(prev.get("match_type")),
+                "new_value": _format_diff_value(r.get("match_type")),
             })
     return changes
 
@@ -636,7 +717,7 @@ def compute_negative_keyword_diffs(prior: List[Dict[str, Any]], current: List[Di
                 "keyword_text": r.get("keyword_text"),
                 "match_type": r.get("match_type"),
                 "old_value": None,
-                "new_value": r.get("match_type"),
+                "new_value": _format_diff_value(r.get("match_type")),
             })
     for r in prior:
         k = _neg_key_key(r)
@@ -648,7 +729,7 @@ def compute_negative_keyword_diffs(prior: List[Dict[str, Any]], current: List[Di
                 "change_type": "REMOVED",
                 "keyword_text": r.get("keyword_text"),
                 "match_type": r.get("match_type"),
-                "old_value": r.get("match_type"),
+                "old_value": _format_diff_value(r.get("match_type")),
                 "new_value": None,
             })
     for r in current:
@@ -663,8 +744,11 @@ def compute_negative_keyword_diffs(prior: List[Dict[str, Any]], current: List[Di
             ov = prev.get("match_type") if mt_changed else prev.get("keyword_text")
             nv = r.get("match_type") if mt_changed else r.get("keyword_text")
             if mt_changed and kt_changed:
-                ov = f"match_type={prev.get('match_type')}; keyword_text={prev.get('keyword_text') or ''}"
-                nv = f"match_type={r.get('match_type')}; keyword_text={r.get('keyword_text') or ''}"
+                ov = f"match_type={_format_diff_value(prev.get('match_type')) or ''}; keyword_text={_format_diff_value(prev.get('keyword_text')) or ''}"
+                nv = f"match_type={_format_diff_value(r.get('match_type')) or ''}; keyword_text={_format_diff_value(r.get('keyword_text')) or ''}"
+            else:
+                ov = _format_diff_value(ov)
+                nv = _format_diff_value(nv)
             diffs.append({
                 "campaign_id": r.get("campaign_id"),
                 "ad_group_id": r.get("ad_group_id") or "",
@@ -700,7 +784,7 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "audience_name": r.get("audience_name"),
                 "targeting_mode": r.get("targeting_mode"),
                 "old_value": None,
-                "new_value": r.get("audience_id") or r.get("audience_type"),
+                "new_value": _format_diff_value(r.get("audience_id") or r.get("audience_type")),
                 "old_size": None,
                 "new_size": r.get("audience_size"),
             })
@@ -716,7 +800,7 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "audience_id": r.get("audience_id"),
                 "audience_name": r.get("audience_name"),
                 "targeting_mode": r.get("targeting_mode"),
-                "old_value": r.get("audience_id") or r.get("audience_type"),
+                "old_value": _format_diff_value(r.get("audience_id") or r.get("audience_type")),
                 "new_value": None,
                 "old_size": r.get("audience_size"),
                 "new_size": None,
@@ -727,7 +811,7 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
         if not prev:
             continue
         mode_changed = (prev.get("targeting_mode") or "") != (r.get("targeting_mode") or "")
-        bid_changed = prev.get("bid_modifier") != r.get("bid_modifier")
+        bid_changed = not _diff_values_equal(prev.get("bid_modifier"), r.get("bid_modifier"))
         def _size(rec: Dict[str, Any]) -> Optional[Any]:
             return rec.get("audience_size")
         if mode_changed and bid_changed:
@@ -740,8 +824,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "audience_id": r.get("audience_id"),
                 "audience_name": r.get("audience_name"),
                 "targeting_mode": r.get("targeting_mode"),
-                "old_value": f"mode={prev.get('targeting_mode')}; bid_modifier={prev.get('bid_modifier')}",
-                "new_value": f"mode={r.get('targeting_mode')}; bid_modifier={r.get('bid_modifier')}",
+                "old_value": f"mode={prev.get('targeting_mode') or ''}; bid_modifier={_format_diff_value(prev.get('bid_modifier')) or ''}",
+                "new_value": f"mode={r.get('targeting_mode') or ''}; bid_modifier={_format_diff_value(r.get('bid_modifier')) or ''}",
                 "old_size": _size(prev),
                 "new_size": _size(r),
             })
@@ -755,8 +839,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "audience_id": r.get("audience_id"),
                 "audience_name": r.get("audience_name"),
                 "targeting_mode": r.get("targeting_mode"),
-                "old_value": prev.get("targeting_mode"),
-                "new_value": r.get("targeting_mode"),
+                "old_value": _format_diff_value(prev.get("targeting_mode")),
+                "new_value": _format_diff_value(r.get("targeting_mode")),
                 "old_size": _size(prev),
                 "new_size": _size(r),
             })
@@ -770,8 +854,8 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
                 "audience_id": r.get("audience_id"),
                 "audience_name": r.get("audience_name"),
                 "targeting_mode": r.get("targeting_mode"),
-                "old_value": str(prev.get("bid_modifier")) if prev.get("bid_modifier") is not None else None,
-                "new_value": str(r.get("bid_modifier")) if r.get("bid_modifier") is not None else None,
+                "old_value": _format_diff_value(prev.get("bid_modifier")),
+                "new_value": _format_diff_value(r.get("bid_modifier")),
                 "old_size": _size(prev),
                 "new_size": _size(r),
             })
@@ -789,16 +873,15 @@ def compute_ad_creative_diffs(prior: List[Dict[str, Any]], current: List[Dict[st
             continue
         for field in ("headlines_json", "descriptions_json", "final_urls", "path1", "path2", "policy_summary_json", "status", "asset_urls"):
             ov, nv = prev.get(field), cur.get(field)
-            if ov is None and nv is None:
+            if _diff_values_equal(ov, nv):
                 continue
-            if ov != nv:
-                diffs.append({
-                    "ad_group_id": cur.get("ad_group_id"),
-                    "ad_id": str(cur.get("ad_id", "")),
-                    "changed_metric_name": field,
-                    "old_value": str(ov)[:65535] if ov is not None else None,
-                    "new_value": str(nv)[:65535] if nv is not None else None,
-                })
+            diffs.append({
+                "ad_group_id": cur.get("ad_group_id"),
+                "ad_id": str(cur.get("ad_id", "")),
+                "changed_metric_name": field,
+                "old_value": _format_diff_value(ov, max_len=65535),
+                "new_value": _format_diff_value(nv, max_len=65535),
+            })
     return diffs
 
 
