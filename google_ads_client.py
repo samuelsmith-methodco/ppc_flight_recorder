@@ -1320,6 +1320,7 @@ def fetch_keywords_daily(
                metrics.average_cpc, metrics.ctr, metrics.search_impression_share, metrics.search_rank_lost_impression_share
         FROM keyword_view
         WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
+          AND ad_group_criterion.negative = FALSE
     """
     rows_out: List[Dict[str, Any]] = []
     try:
@@ -1401,10 +1402,12 @@ def fetch_keyword_criteria_snapshot(
     customer_id_clean = _customer_id_clean(project)
     ga_service = client.get_service("GoogleAdsService")
     query = """
-        SELECT ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
+        SELECT ad_group_criterion.criterion_id, ad_group_criterion.status,
+               ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
                ad_group.id, ad_group.name, campaign.id, campaign.name
         FROM ad_group_criterion
         WHERE ad_group_criterion.type = 'KEYWORD'
+          AND ad_group_criterion.negative = FALSE
     """
     rows_out: List[Dict[str, Any]] = []
     try:
@@ -1423,6 +1426,7 @@ def fetch_keyword_criteria_snapshot(
                 kw = getattr(c, "keyword", None)
                 keyword_text = kw.text if kw and kw.text else ""
                 match_type = kw.match_type.name if kw and hasattr(kw.match_type, "name") else (str(kw.match_type) if kw else "")
+                status = c.status.name if hasattr(c.status, "name") else str(c.status) if getattr(c, "status", None) else None
                 campaign_name = (getattr(campaign, "name", None) or "").strip() or None
                 ad_group_name = (getattr(ad_group, "name", None) or "").strip() or None
                 rows_out.append({
@@ -1431,6 +1435,7 @@ def fetch_keyword_criteria_snapshot(
                     "campaign_id": campaign_id,
                     "keyword_text": keyword_text,
                     "match_type": match_type,
+                    "status": status,
                     "keyword_level": "AD_GROUP",
                     "campaign_name": campaign_name,
                     "ad_group_name": ad_group_name,

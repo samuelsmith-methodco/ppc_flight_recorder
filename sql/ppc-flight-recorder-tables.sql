@@ -8,6 +8,8 @@
 -- Migration: Change event old/new values (run if ppc_change_event_daily exists without them):
 --   ALTER TABLE ppc_change_event_daily ADD COLUMN IF NOT EXISTS old_value VARCHAR(65535);
 --   ALTER TABLE ppc_change_event_daily ADD COLUMN IF NOT EXISTS new_value VARCHAR(65535);
+-- Migration: status for ppc_keyword_snapshot_daily (run if table exists):
+--   ALTER TABLE ppc_keyword_snapshot_daily ADD COLUMN status VARCHAR(32);
 -- Migration: TIER 4 policy_summary for ppc_ad_creative_snapshot_daily (run if table exists):
 --   ALTER TABLE ppc_ad_creative_snapshot_daily ADD COLUMN policy_summary_json VARCHAR(65535);
 -- Migration: status column for ppc_ad_creative_snapshot_daily (run if table exists):
@@ -486,6 +488,7 @@ CREATE TABLE IF NOT EXISTS ppc_keyword_outcomes_diff_daily (
 
 -- ppc_keyword_snapshot_daily: Keyword structure snapshot for add/remove/match-type change detection.
 -- keyword_level: AD_GROUP (positive keywords are always at ad group level). Same criterion_id can appear in multiple ad groups; PK includes ad_group_id.
+-- status: ENABLED | PAUSED | REMOVED. REMOVED keywords may not appear in snapshot (API filters them); removal detected by absence vs prior day.
 CREATE TABLE IF NOT EXISTS ppc_keyword_snapshot_daily (
     keyword_criterion_id VARCHAR(64) NOT NULL,
     ad_group_id VARCHAR(64) NOT NULL,
@@ -494,6 +497,7 @@ CREATE TABLE IF NOT EXISTS ppc_keyword_snapshot_daily (
     customer_id VARCHAR(128) NOT NULL,
     keyword_text VARCHAR(1024),
     match_type VARCHAR(32),
+    status VARCHAR(32),
     keyword_level VARCHAR(32),
     campaign_name VARCHAR(512),
     ad_group_name VARCHAR(512),

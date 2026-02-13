@@ -1271,20 +1271,21 @@ def upsert_keyword_snapshot_daily(
             params[prefix + "customer_id"] = customer_id
             params[prefix + "keyword_text"] = _safe_str(r.get("keyword_text"), 1024)
             params[prefix + "match_type"] = _safe_str(r.get("match_type"), 32)
+            params[prefix + "status"] = _safe_str(r.get("status"), 32)
             params[prefix + "keyword_level"] = _safe_str(r.get("keyword_level") or "AD_GROUP", 32)
             params[prefix + "campaign_name"] = _safe_str(r.get("campaign_name"), 512)
             params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name"), 512)
             values_parts.append(
-                f"(%(r{i}_keyword_criterion_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_keyword_level)s, %(r{i}_campaign_name)s, %(r{i}_ad_group_name)s)"
+                f"(%(r{i}_keyword_criterion_id)s, %(r{i}_ad_group_id)s, %(r{i}_campaign_id)s, %(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_status)s, %(r{i}_keyword_level)s, %(r{i}_campaign_name)s, %(r{i}_ad_group_name)s)"
             )
         values_sql = ",\n                ".join(values_parts)
         merge_sql = f"""
             MERGE INTO {tbl} AS target
-            USING (SELECT * FROM (VALUES {values_sql}) AS v(keyword_criterion_id, ad_group_id, campaign_id, snapshot_date, customer_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)) AS source
+            USING (SELECT * FROM (VALUES {values_sql}) AS v(keyword_criterion_id, ad_group_id, campaign_id, snapshot_date, customer_id, keyword_text, match_type, status, keyword_level, campaign_name, ad_group_name)) AS source
             ON target.keyword_criterion_id = source.keyword_criterion_id AND target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.ad_group_id = source.ad_group_id
-            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, keyword_text = source.keyword_text, match_type = source.match_type, keyword_level = source.keyword_level, campaign_name = source.campaign_name, ad_group_name = source.ad_group_name
-            WHEN NOT MATCHED THEN INSERT (keyword_criterion_id, ad_group_id, campaign_id, snapshot_date, customer_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)
-            VALUES (source.keyword_criterion_id, source.ad_group_id, source.campaign_id, source.snapshot_date, source.customer_id, source.keyword_text, source.match_type, source.keyword_level, source.campaign_name, source.ad_group_name)
+            WHEN MATCHED THEN UPDATE SET campaign_id = source.campaign_id, keyword_text = source.keyword_text, match_type = source.match_type, status = source.status, keyword_level = source.keyword_level, campaign_name = source.campaign_name, ad_group_name = source.ad_group_name
+            WHEN NOT MATCHED THEN INSERT (keyword_criterion_id, ad_group_id, campaign_id, snapshot_date, customer_id, keyword_text, match_type, status, keyword_level, campaign_name, ad_group_name)
+            VALUES (source.keyword_criterion_id, source.ad_group_id, source.campaign_id, source.snapshot_date, source.customer_id, source.keyword_text, source.match_type, source.status, source.keyword_level, source.campaign_name, source.ad_group_name)
         """
         execute(conn, merge_sql, params)
         conn.commit()
@@ -1298,7 +1299,7 @@ def get_keyword_snapshot_for_date(customer_id: str, snapshot_date: date, conn: O
     tbl = _table("ppc_keyword_snapshot_daily")
 
     def do(conn):
-        q = f"SELECT keyword_criterion_id, ad_group_id, campaign_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        q = f"SELECT keyword_criterion_id, ad_group_id, campaign_id, keyword_text, match_type, status, keyword_level, campaign_name, ad_group_name FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
         return execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": snapshot_date.isoformat()})
 
     df = _run_with_conn(conn, do)
