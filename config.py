@@ -46,6 +46,8 @@ GOOGLE_ADS_CUSTOMER_ID_MYROOST = os.getenv("GOOGLE_ADS_CUSTOMER_ID_MYROOST", "")
 
 # GA4 (Apps Script)
 GA4_MARKETING_API_URL = os.getenv("GA4_MARKETING_API_URL", "")
+# When True, daily (scheduled and manual) sync will fetch and save GA4 data. Default False.
+SAVE_GA4_ON_DAILY_SYNC = os.getenv("SAVE_GA4_ON_DAILY_SYNC", "").strip().lower() in ("1", "true", "yes")
 
 # Projects to sync (comma-separated)
 PPC_PROJECTS = os.getenv("PPC_PROJECTS", "the-pinch")

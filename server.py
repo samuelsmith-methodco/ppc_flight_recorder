@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from config import (
     PPC_PROJECTS,
+    SAVE_GA4_ON_DAILY_SYNC,
     SYNC_SCHEDULE_HOUR,
     SYNC_SCHEDULE_MINUTE,
     SYNC_SCHEDULE_TIMEZONE,
@@ -34,7 +35,7 @@ _last_sync_result: Optional[dict] = None
 
 
 def _run_daily_sync() -> None:
-    """Run daily sync for last 2 days + today (3 dates), all projects, GA4 + diffs. Called by scheduler."""
+    """Run daily sync for yesterday, all projects; GA4 + diffs only if SAVE_GA4_ON_DAILY_SYNC is set. Called by scheduler."""
     global _last_sync_result
     from sync import run_sync
 
@@ -49,7 +50,7 @@ def _run_daily_sync() -> None:
             run_sync(
                 snapshot_date=snapshot_date,
                 projects=projects,
-                run_ga4=True,
+                run_ga4=SAVE_GA4_ON_DAILY_SYNC,
             )
             completed.append(snapshot_date.isoformat())
             logger.info("Scheduled daily sync completed for %s", snapshot_date.isoformat())
@@ -112,10 +113,11 @@ async def lifespan(app: FastAPI):
     time_left = _format_time_until(next_run)
     next_iso = next_run.isoformat() if next_run else "?"
     logger.info(
-        "Scheduler started: daily sync at %02d:%02d %s (yesterday, GA4 + diffs); next run in %s (%s)",
+        "Scheduler started: daily sync at %02d:%02d %s (yesterday%s); next run in %s (%s)",
         SYNC_SCHEDULE_HOUR,
         SYNC_SCHEDULE_MINUTE,
         SYNC_SCHEDULE_TIMEZONE,
+        ", GA4 + diffs" if SAVE_GA4_ON_DAILY_SYNC else "",
         time_left,
         next_iso,
     )
@@ -196,7 +198,7 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
         run_sync(
             snapshot_date=snapshot_date,
             projects=projects,
-            run_ga4=not (control_state_only or control_state_keyword_only or control_state_adgroup_only or control_state_device_only or control_state_conversions_only),
+            run_ga4=SAVE_GA4_ON_DAILY_SYNC and not (control_state_only or control_state_keyword_only or control_state_adgroup_only or control_state_device_only or control_state_conversions_only),
             control_state_only=control_state_only,
             control_state_keyword_only=control_state_keyword_only,
             control_state_adgroup_only=control_state_adgroup_only,
