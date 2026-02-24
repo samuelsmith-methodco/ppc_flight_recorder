@@ -13,6 +13,9 @@ from snowflake_connection import execute, execute_many, execute_query, get_conne
 
 logger = logging.getLogger(__name__)
 
+# Max rows per MERGE for negative keyword snapshot to avoid client/server timeouts
+NEGATIVE_KEYWORD_MERGE_BATCH_SIZE = 500
+
 
 def _table(name: str) -> str:
     """Return fully qualified table name (database.schema.table). Uses unquoted identifiers so Snowflake resolves to uppercase (matches DDL)."""
@@ -1436,38 +1439,42 @@ def upsert_negative_keyword_snapshot_daily(
     tbl = _table("ppc_negative_keyword_snapshot_daily")
 
     def do(conn):
-        values_parts = []
-        params = {}
-        for i, r in enumerate(rows):
-            prefix = f"r{i}_"
-            ad_group_id = r.get("ad_group_id")
-            if ad_group_id is None:
-                ad_group_id = ""
-            params[prefix + "snapshot_date"] = date_str
-            params[prefix + "customer_id"] = customer_id
-            params[prefix + "campaign_id"] = r.get("campaign_id")
-            params[prefix + "ad_group_id"] = ad_group_id
-            params[prefix + "criterion_id"] = str(r.get("criterion_id", ""))
-            params[prefix + "keyword_text"] = _safe_str(r.get("keyword_text"), 1024)
-            params[prefix + "match_type"] = _safe_str(r.get("match_type"), 32)
-            params[prefix + "keyword_level"] = _safe_str(r.get("keyword_level") or ("AD_GROUP" if ad_group_id else "CAMPAIGN"), 32)
-            params[prefix + "campaign_name"] = _safe_str(r.get("campaign_name"), 512)
-            params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name"), 512)
-            values_parts.append(
-                f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_group_id)s, %(r{i}_criterion_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_keyword_level)s, %(r{i}_campaign_name)s, %(r{i}_ad_group_name)s)"
-            )
-        values_sql = ",\n                ".join(values_parts)
-        merge_sql = f"""
-            MERGE INTO {tbl} AS target
-            USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)) AS source
-            ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.campaign_id = source.campaign_id AND target.ad_group_id = source.ad_group_id AND target.criterion_id = source.criterion_id
-            WHEN MATCHED THEN UPDATE SET keyword_text = source.keyword_text, match_type = source.match_type, keyword_level = source.keyword_level, campaign_name = source.campaign_name, ad_group_name = source.ad_group_name
-            WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)
-            VALUES (source.snapshot_date, source.customer_id, source.campaign_id, source.ad_group_id, source.criterion_id, source.keyword_text, source.match_type, source.keyword_level, source.campaign_name, source.ad_group_name)
-        """
-        execute(conn, merge_sql, params)
+        total = 0
+        for chunk_start in range(0, len(rows), NEGATIVE_KEYWORD_MERGE_BATCH_SIZE):
+            chunk = rows[chunk_start : chunk_start + NEGATIVE_KEYWORD_MERGE_BATCH_SIZE]
+            values_parts = []
+            params = {}
+            for i, r in enumerate(chunk):
+                prefix = f"r{i}_"
+                ad_group_id = r.get("ad_group_id")
+                if ad_group_id is None:
+                    ad_group_id = ""
+                params[prefix + "snapshot_date"] = date_str
+                params[prefix + "customer_id"] = customer_id
+                params[prefix + "campaign_id"] = r.get("campaign_id")
+                params[prefix + "ad_group_id"] = ad_group_id
+                params[prefix + "criterion_id"] = str(r.get("criterion_id", ""))
+                params[prefix + "keyword_text"] = _safe_str(r.get("keyword_text"), 1024)
+                params[prefix + "match_type"] = _safe_str(r.get("match_type"), 32)
+                params[prefix + "keyword_level"] = _safe_str(r.get("keyword_level") or ("AD_GROUP" if ad_group_id else "CAMPAIGN"), 32)
+                params[prefix + "campaign_name"] = _safe_str(r.get("campaign_name"), 512)
+                params[prefix + "ad_group_name"] = _safe_str(r.get("ad_group_name"), 512)
+                values_parts.append(
+                    f"(%(r{i}_snapshot_date)s::DATE, %(r{i}_customer_id)s, %(r{i}_campaign_id)s, %(r{i}_ad_group_id)s, %(r{i}_criterion_id)s, %(r{i}_keyword_text)s, %(r{i}_match_type)s, %(r{i}_keyword_level)s, %(r{i}_campaign_name)s, %(r{i}_ad_group_name)s)"
+                )
+            values_sql = ",\n                ".join(values_parts)
+            merge_sql = f"""
+                MERGE INTO {tbl} AS target
+                USING (SELECT * FROM (VALUES {values_sql}) AS v(snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)) AS source
+                ON target.snapshot_date = source.snapshot_date AND target.customer_id = source.customer_id AND target.campaign_id = source.campaign_id AND target.ad_group_id = source.ad_group_id AND target.criterion_id = source.criterion_id
+                WHEN MATCHED THEN UPDATE SET keyword_text = source.keyword_text, match_type = source.match_type, keyword_level = source.keyword_level, campaign_name = source.campaign_name, ad_group_name = source.ad_group_name
+                WHEN NOT MATCHED THEN INSERT (snapshot_date, customer_id, campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name)
+                VALUES (source.snapshot_date, source.customer_id, source.campaign_id, source.ad_group_id, source.criterion_id, source.keyword_text, source.match_type, source.keyword_level, source.campaign_name, source.ad_group_name)
+            """
+            execute(conn, merge_sql, params)
+            total += len(chunk)
         conn.commit()
-        logger.info("ppc_flight_recorder: upserted %s negative_keyword_snapshot rows for customer_id=%s @ %s", len(rows), customer_id, date_str)
+        logger.info("ppc_flight_recorder: upserted %s negative_keyword_snapshot rows for customer_id=%s @ %s", total, customer_id, date_str)
 
     _run_with_conn(conn, do)
     return len(rows)

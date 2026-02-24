@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_connection_params() -> Dict[str, Any]:
-    # Same base as backend; longer timeouts for slow proxy/VPN (insecure_mode avoids OCSP issues)
+    # Same base as backend; longer timeouts for slow proxy/VPN and large MERGEs (insecure_mode avoids OCSP issues)
     params = {
         "account": SNOWFLAKE_ACCOUNT,
         "user": SNOWFLAKE_USER,
@@ -37,7 +37,7 @@ def _get_connection_params() -> Dict[str, Any]:
         "database": SNOWFLAKE_DATABASE,
         "schema": SNOWFLAKE_SCHEMA,
         "login_timeout": 60,
-        "network_timeout": 120,
+        "network_timeout": 600,  # 10 min for large syncs (e.g. negative keyword snapshot MERGE)
         "insecure_mode": True,
     }
     if SNOWFLAKE_ROLE:
