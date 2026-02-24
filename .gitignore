@@ -1,0 +1,18 @@
+# Credentials – do not commit
+.env
+.env.local
+*.pem
+*.p8
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.Python
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
