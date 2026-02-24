@@ -90,7 +90,7 @@ python sync.py --date 2026-02-10 --control-state-campaign-only
 
 # Keyword and negative keyword snapshots and diffs only
 python sync.py --date 2026-02-10 --control-state-keyword-only
-
+ 
 # Ad group snapshot and diff only (ppc_ad_group_snapshot_daily, ppc_ad_group_change_daily)
 python sync.py --date 2026-02-10 --control-state-adgroup-only
 
