@@ -53,7 +53,9 @@ from storage import (
     get_ga4_acquisition_for_date,
     get_keyword_outcomes_for_date,
     get_keyword_snapshot_for_date,
+    get_keyword_snapshot_latest_on_or_before,
     get_negative_keyword_snapshot_for_date,
+    get_negative_keyword_snapshot_latest_on_or_before,
     get_outcomes_for_date,
     insert_ad_creative_diff_daily,
     insert_ad_group_change_daily,
@@ -1082,25 +1084,25 @@ def run_sync(
                     continue
 
                 if control_state_keyword_only:
-                    # Only keyword snapshot + change and negative keyword snapshot + diff
+                    # Only keyword snapshot + change and negative keyword snapshot + diff (change-only: save snapshot only when there are changes)
                     kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
                     if kw_criteria:
                         snapshot_rows = [dict(r) for r in kw_criteria]
-                        upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
-                        prior_kw_snap = get_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
-                        if prior_kw_snap:
-                            kw_changes = compute_keyword_changes(prior_kw_snap, snapshot_rows)
-                            if kw_changes:
-                                insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
+                        _, prior_kw_snap = get_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
+                        kw_changes = compute_keyword_changes(prior_kw_snap, snapshot_rows)
+                        if not prior_kw_snap or kw_changes:
+                            upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
+                        if kw_changes:
+                            insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
                     neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
                     if neg_kw:
                         neg_rows = [dict(r) for r in neg_kw]
-                        upsert_negative_keyword_snapshot_daily(snapshot_date, customer_id, neg_rows, conn=conn)
-                        prior_neg = get_negative_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
-                        if prior_neg:
-                            neg_diffs = compute_negative_keyword_diffs(prior_neg, neg_rows)
-                            if neg_diffs:
-                                insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
+                        _, prior_neg = get_negative_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
+                        neg_diffs = compute_negative_keyword_diffs(prior_neg, neg_rows)
+                        if not prior_neg or neg_diffs:
+                            upsert_negative_keyword_snapshot_daily(snapshot_date, customer_id, neg_rows, conn=conn)
+                        if neg_diffs:
+                            insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
                     continue
 
                 control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
@@ -1159,27 +1161,27 @@ def run_sync(
                         if ag_changes:
                             insert_ad_group_change_daily(snapshot_date, customer_id, ag_changes, conn=conn)
 
-                # TIER 2: keyword snapshot / change (pass full row so keyword_level, campaign_name, ad_group_name are stored)
+                # TIER 2: keyword snapshot / change (change-only: save snapshot only when there are changes)
                 kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
                 if kw_criteria:
                     snapshot_rows = [dict(r) for r in kw_criteria]
-                    upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
-                    prior_kw_snap = get_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
-                    if prior_kw_snap:
-                        kw_changes = compute_keyword_changes(prior_kw_snap, snapshot_rows)
-                        if kw_changes:
-                            insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
+                    _, prior_kw_snap = get_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
+                    kw_changes = compute_keyword_changes(prior_kw_snap, snapshot_rows)
+                    if not prior_kw_snap or kw_changes:
+                        upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
+                    if kw_changes:
+                        insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
 
-                # TIER 2: negative keyword snapshot / diff (pass full row so ad_group_id, keyword_level, campaign_name, ad_group_name are stored)
+                # TIER 2: negative keyword snapshot / diff (change-only: save snapshot only when there are changes)
                 neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
                 if neg_kw:
                     neg_rows = [dict(r) for r in neg_kw]
-                    upsert_negative_keyword_snapshot_daily(snapshot_date, customer_id, neg_rows, conn=conn)
-                    prior_neg = get_negative_keyword_snapshot_for_date(customer_id, prior_date, conn=conn)
-                    if prior_neg:
-                        neg_diffs = compute_negative_keyword_diffs(prior_neg, neg_rows)
-                        if neg_diffs:
-                            insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
+                    _, prior_neg = get_negative_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
+                    neg_diffs = compute_negative_keyword_diffs(prior_neg, neg_rows)
+                    if not prior_neg or neg_diffs:
+                        upsert_negative_keyword_snapshot_daily(snapshot_date, customer_id, neg_rows, conn=conn)
+                    if neg_diffs:
+                        insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
 
                 # TIER 2: ad creative (RSA) snapshot / diff
                 rsa_ads = fetch_ad_creative_snapshot(project=project, google_ads_filters=google_ads_filters)

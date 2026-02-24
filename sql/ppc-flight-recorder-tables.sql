@@ -487,6 +487,8 @@ CREATE TABLE IF NOT EXISTS ppc_keyword_outcomes_diff_daily (
 );
 
 -- ppc_keyword_snapshot_daily: Keyword structure snapshot for add/remove/match-type change detection.
+-- Change-only: rows are written only when the snapshot differs from the previous (latest on or before prior day).
+-- When reading, if no row exists for date X, use the latest snapshot_date <= X.
 -- keyword_level: AD_GROUP (positive keywords are always at ad group level). Same criterion_id can appear in multiple ad groups; PK includes ad_group_id.
 -- status: ENABLED | PAUSED | REMOVED. REMOVED keywords may not appear in snapshot (API filters them); removal detected by absence vs prior day.
 CREATE TABLE IF NOT EXISTS ppc_keyword_snapshot_daily (
@@ -522,6 +524,8 @@ CREATE TABLE IF NOT EXISTS ppc_keyword_change_daily (
 );
 
 -- ppc_negative_keyword_snapshot_daily: Campaign- and ad group-level negative keywords.
+-- Change-only: rows are written only when the snapshot differs from the previous (latest on or before prior day).
+-- When reading, if no row exists for date X, use the latest snapshot_date <= X.
 -- keyword_level: CAMPAIGN | AD_GROUP. ad_group_id empty for campaign-level. Same criterion_id can be campaign- and ad group-level; PK includes ad_group_id.
 CREATE TABLE IF NOT EXISTS ppc_negative_keyword_snapshot_daily (
     snapshot_date DATE NOT NULL,

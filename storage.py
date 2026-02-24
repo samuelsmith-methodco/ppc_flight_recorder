@@ -6,7 +6,7 @@ Uses batch MERGE (one statement per table) and optional connection reuse to avoi
 import logging
 import math
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA
 from snowflake_connection import execute, execute_many, execute_query, get_connection
@@ -1375,6 +1375,38 @@ def get_keyword_snapshot_for_date(customer_id: str, snapshot_date: date, conn: O
     return df.to_dict("records")
 
 
+def get_keyword_snapshot_latest_on_or_before(
+    customer_id: str, on_or_before_date: date, conn: Optional[Any] = None
+) -> Tuple[Optional[date], List[Dict[str, Any]]]:
+    """
+    Return the latest keyword snapshot on or before on_or_before_date.
+    Used for change-only daily snapshots: prior snapshot for diff and to decide whether to persist today.
+    Returns (effective_date, rows); (None, []) if no snapshot exists.
+    """
+    tbl = _table("ppc_keyword_snapshot_daily")
+
+    def do(conn):
+        q_max = f"SELECT MAX(snapshot_date) AS d FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date <= %(on_or_before)s::DATE"
+        df_max = execute_query(conn, q_max, {"customer_id": customer_id, "on_or_before": on_or_before_date.isoformat()})
+        if df_max is None or df_max.empty:
+            return None, []
+        d = df_max.iloc[0].get("D")
+        if d is None:
+            return None, []
+        try:
+            eff_date = d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
+        except (TypeError, ValueError):
+            return None, []
+        q = f"SELECT keyword_criterion_id, ad_group_id, campaign_id, keyword_text, match_type, status, keyword_level, campaign_name, ad_group_name FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        df = execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": eff_date.isoformat()})
+        if df is None or df.empty:
+            return eff_date, []
+        df.columns = [c.lower() for c in df.columns]
+        return eff_date, df.to_dict("records")
+
+    return _run_with_conn(conn, do)
+
+
 def insert_keyword_change_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
     if not rows:
         return 0
@@ -1492,6 +1524,38 @@ def get_negative_keyword_snapshot_for_date(customer_id: str, snapshot_date: date
         return []
     df.columns = [c.lower() for c in df.columns]
     return df.to_dict("records")
+
+
+def get_negative_keyword_snapshot_latest_on_or_before(
+    customer_id: str, on_or_before_date: date, conn: Optional[Any] = None
+) -> Tuple[Optional[date], List[Dict[str, Any]]]:
+    """
+    Return the latest negative keyword snapshot on or before on_or_before_date.
+    Used for change-only daily snapshots: prior snapshot for diff and to decide whether to persist today.
+    Returns (effective_date, rows); (None, []) if no snapshot exists.
+    """
+    tbl = _table("ppc_negative_keyword_snapshot_daily")
+
+    def do(conn):
+        q_max = f"SELECT MAX(snapshot_date) AS d FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date <= %(on_or_before)s::DATE"
+        df_max = execute_query(conn, q_max, {"customer_id": customer_id, "on_or_before": on_or_before_date.isoformat()})
+        if df_max is None or df_max.empty:
+            return None, []
+        d = df_max.iloc[0].get("D")
+        if d is None:
+            return None, []
+        try:
+            eff_date = d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
+        except (TypeError, ValueError):
+            return None, []
+        q = f"SELECT campaign_id, ad_group_id, criterion_id, keyword_text, match_type, keyword_level, campaign_name, ad_group_name FROM {tbl} WHERE customer_id = %(customer_id)s AND snapshot_date = %(snapshot_date)s"
+        df = execute_query(conn, q, {"customer_id": customer_id, "snapshot_date": eff_date.isoformat()})
+        if df is None or df.empty:
+            return eff_date, []
+        df.columns = [c.lower() for c in df.columns]
+        return eff_date, df.to_dict("records")
+
+    return _run_with_conn(conn, do)
 
 
 def insert_negative_keyword_diff_daily(snapshot_date: date, customer_id: str, rows: List[Dict[str, Any]], conn: Optional[Any] = None) -> int:
