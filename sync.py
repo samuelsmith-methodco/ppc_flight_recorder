@@ -148,6 +148,23 @@ def _diff_value_empty(v: Any) -> bool:
     return False
 
 
+def _diff_bid_modifier_equal(ov: Any, nv: Any) -> bool:
+    """True if old and new bid_modifier are effectively equal. Compare as floats rounded to 2 decimals so 0.7 and 0.699943 are not reported as a change."""
+    if _diff_value_empty(ov) and _diff_value_empty(nv):
+        return True
+    if _diff_value_empty(ov) or _diff_value_empty(nv):
+        return False
+    try:
+        o_f, n_f = float(ov), float(nv)
+        if math.isnan(o_f) and math.isnan(n_f):
+            return True
+        if math.isnan(o_f) or math.isnan(n_f):
+            return False
+        return round(o_f, 2) == round(n_f, 2)
+    except (TypeError, ValueError):
+        return False
+
+
 def _diff_values_equal(ov: Any, nv: Any) -> bool:
     """True if old and new are considered equal for diff (no change). Avoids nan vs null, 1.15 vs 1.150000, True vs 'True'."""
     if _diff_value_empty(ov) and _diff_value_empty(nv):
@@ -365,7 +382,7 @@ def compute_ad_group_device_modifier_diffs(prior: List[Dict[str, Any]], current:
             })
         else:
             ov, nv = prev.get("bid_modifier"), cur.get("bid_modifier")
-            if not _diff_values_equal(ov, nv):
+            if not _diff_bid_modifier_equal(ov, nv):
                 diffs.append({
                     "campaign_id": cid,
                     "ad_group_id": agid,
@@ -829,7 +846,7 @@ def compute_audience_targeting_changes(prior: List[Dict[str, Any]], current: Lis
         if not prev:
             continue
         mode_changed = (prev.get("targeting_mode") or "") != (r.get("targeting_mode") or "")
-        bid_changed = not _diff_values_equal(prev.get("bid_modifier"), r.get("bid_modifier"))
+        bid_changed = not _diff_bid_modifier_equal(prev.get("bid_modifier"), r.get("bid_modifier"))
         def _size(rec: Dict[str, Any]) -> Optional[Any]:
             return rec.get("audience_size")
         if mode_changed and bid_changed:
