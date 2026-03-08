@@ -23,6 +23,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
+from google.api_core.exceptions import ServiceUnavailable
+
 from config import PPC_PROJECTS, get_google_ads_customer_id, normalize_customer_id
 from ga4_client import fetch_ga4_acquisition_all_sync
 from google_ads_client import (
@@ -958,7 +960,11 @@ def run_sync(
             try:
                 if control_state_campaign_only:
                     # Only campaign control state (ppc_campaign_control_state_daily) + geo targeting snapshot + diff
-                    control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping control state fetch for project=%s: %s", project, e)
+                        control_rows, geo_targeting_rows = [], []
                     if control_rows:
                         state_for_storage = [_control_state_row_for_storage(r) for r in control_rows]
                         upsert_control_state_daily(snapshot_date, customer_id, state_for_storage, conn=conn)
@@ -976,7 +982,11 @@ def run_sync(
                         if geo_diff_list:
                             insert_geo_targeting_diff_daily(snapshot_date, customer_id, geo_diff_list, conn=conn)
                     # Device targeting (ad group-level device modifiers + date of change)
-                    device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping device modifiers fetch for project=%s: %s", project, e)
+                        device_mod_rows = []
                     upsert_ad_group_device_modifier_daily(snapshot_date, customer_id, device_mod_rows or [], conn=conn)
                     prior_dev = get_ad_group_device_modifier_for_date(customer_id, prior_date, conn=conn)
                     if prior_dev or (device_mod_rows or []):
@@ -984,7 +994,11 @@ def run_sync(
                         if dev_diff_list:
                             insert_ad_group_device_modifier_diff_daily(snapshot_date, customer_id, dev_diff_list, conn=conn)
                     # Conversion definitions (conversion actions + attribution / lookback)
-                    conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping conversion actions fetch for project=%s: %s", project, e)
+                        conv_rows = []
                     upsert_conversion_actions_daily(snapshot_date, customer_id, conv_rows or [], conn=conn)
                     prior_conv = get_conversion_actions_for_date(customer_id, prior_date, conn=conn)
                     if prior_conv or (conv_rows or []):
@@ -1027,13 +1041,21 @@ def run_sync(
                     for d in range(CHANGE_EVENTS_DAYS):
                         ev_date = snapshot_date - timedelta(days=(CHANGE_EVENTS_DAYS - 1 - d))
                         ev_str = ev_date.isoformat()
-                        change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                        try:
+                            change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                        except ServiceUnavailable as e:
+                            logger.warning("Google Ads API unavailable (503), skipping change events fetch for project=%s date=%s: %s", project, ev_str, e)
+                            change_events = []
                         upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
                     continue
 
                 if control_state_conversions_only:
                     # Only conversion definitions (conversion actions + attribution / lookback)
-                    conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping conversion actions fetch for project=%s: %s", project, e)
+                        conv_rows = []
                     upsert_conversion_actions_daily(snapshot_date, customer_id, conv_rows or [], conn=conn)
                     prior_conv = get_conversion_actions_for_date(customer_id, prior_date, conn=conn)
                     if prior_conv or (conv_rows or []):
@@ -1044,7 +1066,11 @@ def run_sync(
 
                 if control_state_device_only:
                     # Only device targeting (ad group device modifiers) snapshot + diff
-                    device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping device modifiers fetch for project=%s: %s", project, e)
+                        device_mod_rows = []
                     upsert_ad_group_device_modifier_daily(snapshot_date, customer_id, device_mod_rows or [], conn=conn)
                     prior_dev = get_ad_group_device_modifier_for_date(customer_id, prior_date, conn=conn)
                     if prior_dev or (device_mod_rows or []):
@@ -1055,13 +1081,21 @@ def run_sync(
                     for d in range(CHANGE_EVENTS_DAYS):
                         ev_date = snapshot_date - timedelta(days=(CHANGE_EVENTS_DAYS - 1 - d))
                         ev_str = ev_date.isoformat()
-                        change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                        try:
+                            change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                        except ServiceUnavailable as e:
+                            logger.warning("Google Ads API unavailable (503), skipping change events fetch for project=%s date=%s: %s", project, ev_str, e)
+                            change_events = []
                         upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
                     continue
 
                 if control_state_audience_only:
                     # Only audience targeting snapshot + diff
-                    audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping audience targeting fetch for project=%s: %s", project, e)
+                        audience_rows = None
                     if audience_rows:
                         aud_snapshot = [
                             {
@@ -1089,7 +1123,11 @@ def run_sync(
 
                 if control_state_adgroup_only:
                     # Only ad group snapshot + change
-                    ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping ad group structure fetch for project=%s: %s", project, e)
+                        ad_group_struct = None
                     if ad_group_struct:
                         ag_snapshot_rows = [{"ad_group_id": r["ad_group_id"], "campaign_id": r["campaign_id"], "ad_group_name": r["ad_group_name"], "status": r["status"]} for r in ad_group_struct]
                         upsert_ad_group_snapshot_daily(snapshot_date, customer_id, ag_snapshot_rows, conn=conn)
@@ -1102,7 +1140,11 @@ def run_sync(
 
                 if control_state_keyword_only:
                     # Only keyword snapshot + change and negative keyword snapshot + diff (change-only: save snapshot only when there are changes)
-                    kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping keyword criteria fetch for project=%s: %s", project, e)
+                        kw_criteria = None
                     if kw_criteria:
                         snapshot_rows = [dict(r) for r in kw_criteria]
                         _, prior_kw_snap = get_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
@@ -1111,7 +1153,11 @@ def run_sync(
                             upsert_keyword_snapshot_daily(snapshot_date, customer_id, snapshot_rows, conn=conn)
                         if kw_changes:
                             insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
-                    neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    try:
+                        neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping negative keywords fetch for project=%s: %s", project, e)
+                        neg_kw = None
                     if neg_kw:
                         neg_rows = [dict(r) for r in neg_kw]
                         _, prior_neg = get_negative_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
@@ -1122,7 +1168,11 @@ def run_sync(
                             insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
                     continue
 
-                control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    control_rows, geo_targeting_rows = fetch_campaign_control_state(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping control state fetch for project=%s: %s", project, e)
+                    control_rows, geo_targeting_rows = [], []
                 if not control_rows:
                     logger.warning("No control state rows for project=%s", project)
                 else:
@@ -1143,7 +1193,11 @@ def run_sync(
                             insert_geo_targeting_diff_daily(snapshot_date, customer_id, geo_diff_list, conn=conn)
 
                 # Device targeting (ad group-level device modifiers + date of change)
-                device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    device_mod_rows = fetch_ad_group_device_modifiers(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping device modifiers fetch for project=%s: %s", project, e)
+                    device_mod_rows = []
                 upsert_ad_group_device_modifier_daily(snapshot_date, customer_id, device_mod_rows or [], conn=conn)
                 prior_dev = get_ad_group_device_modifier_for_date(customer_id, prior_date, conn=conn)
                 if prior_dev or (device_mod_rows or []):
@@ -1155,11 +1209,19 @@ def run_sync(
                 for d in range(CHANGE_EVENTS_DAYS):
                     ev_date = snapshot_date - timedelta(days=(CHANGE_EVENTS_DAYS - 1 - d))
                     ev_str = ev_date.isoformat()
-                    change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                    try:
+                        change_events = fetch_change_events(project=project, snapshot_date=ev_str, google_ads_filters=google_ads_filters)
+                    except ServiceUnavailable as e:
+                        logger.warning("Google Ads API unavailable (503), skipping change events fetch for project=%s date=%s: %s", project, ev_str, e)
+                        change_events = []
                     upsert_change_events_daily(ev_date, customer_id, change_events or [], conn=conn)
 
                 # Conversion definitions (conversion actions + attribution / lookback)
-                conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    conv_rows = fetch_conversion_actions(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping conversion actions fetch for project=%s: %s", project, e)
+                    conv_rows = []
                 upsert_conversion_actions_daily(snapshot_date, customer_id, conv_rows or [], conn=conn)
                 prior_conv = get_conversion_actions_for_date(customer_id, prior_date, conn=conn)
                 if prior_conv or (conv_rows or []):
@@ -1168,7 +1230,11 @@ def run_sync(
                         insert_conversion_action_diff_daily(snapshot_date, customer_id, conv_diff_list, conn=conn)
 
                 # TIER 2: ad group snapshot / change (status, add/remove, rename)
-                ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    ad_group_struct = fetch_ad_group_structure_snapshot(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping ad group structure fetch for project=%s: %s", project, e)
+                    ad_group_struct = None
                 if ad_group_struct:
                     ag_snapshot_rows = [{"ad_group_id": r["ad_group_id"], "campaign_id": r["campaign_id"], "ad_group_name": r["ad_group_name"], "status": r["status"]} for r in ad_group_struct]
                     upsert_ad_group_snapshot_daily(snapshot_date, customer_id, ag_snapshot_rows, conn=conn)
@@ -1179,7 +1245,11 @@ def run_sync(
                             insert_ad_group_change_daily(snapshot_date, customer_id, ag_changes, conn=conn)
 
                 # TIER 2: keyword snapshot / change (change-only: save snapshot only when there are changes)
-                kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    kw_criteria = fetch_keyword_criteria_snapshot(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping keyword criteria fetch for project=%s: %s", project, e)
+                    kw_criteria = None
                 if kw_criteria:
                     snapshot_rows = [dict(r) for r in kw_criteria]
                     _, prior_kw_snap = get_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
@@ -1190,7 +1260,11 @@ def run_sync(
                         insert_keyword_change_daily(snapshot_date, customer_id, kw_changes, conn=conn)
 
                 # TIER 2: negative keyword snapshot / diff (change-only: save snapshot only when there are changes)
-                neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    neg_kw = fetch_negative_keywords_snapshot(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping negative keywords fetch for project=%s: %s", project, e)
+                    neg_kw = None
                 if neg_kw:
                     neg_rows = [dict(r) for r in neg_kw]
                     _, prior_neg = get_negative_keyword_snapshot_latest_on_or_before(customer_id, prior_date, conn=conn)
@@ -1201,7 +1275,11 @@ def run_sync(
                         insert_negative_keyword_diff_daily(snapshot_date, customer_id, neg_diffs, conn=conn)
 
                 # TIER 2: ad creative (RSA) snapshot / diff
-                rsa_ads = fetch_ad_creative_snapshot(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    rsa_ads = fetch_ad_creative_snapshot(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping ad creative fetch for project=%s: %s", project, e)
+                    rsa_ads = None
                 if rsa_ads:
                     creative_rows = [
                         {
@@ -1228,7 +1306,11 @@ def run_sync(
                             insert_ad_creative_diff_daily(snapshot_date, customer_id, creative_diffs, conn=conn)
 
                 # TIER 2: audience targeting snapshot / diff (in-market, custom intent, remarketing)
-                audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
+                try:
+                    audience_rows = fetch_audience_targeting_snapshot(project=project, google_ads_filters=google_ads_filters)
+                except ServiceUnavailable as e:
+                    logger.warning("Google Ads API unavailable (503), skipping audience targeting fetch for project=%s: %s", project, e)
+                    audience_rows = None
                 if audience_rows:
                     aud_snapshot = [{"campaign_id": r["campaign_id"], "ad_group_id": r.get("ad_group_id") or "", "criterion_id": r["criterion_id"], "audience_type": r["audience_type"], "audience_id": r.get("audience_id"), "audience_name": r.get("audience_name"), "targeting_mode": r.get("targeting_mode"), "audience_size": r.get("audience_size"), "status": r.get("status"), "bid_modifier": r.get("bid_modifier"), "negative": r.get("negative")} for r in audience_rows]
                     upsert_audience_targeting_snapshot_daily(snapshot_date, customer_id, aud_snapshot, conn=conn)
