@@ -56,6 +56,22 @@ sql/ppc-flight-recorder-tables.sql
 
 Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_geo_targeting_daily`, `ppc_campaign_geo_targeting_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, keyword/negative keyword snapshot and diff tables, ad group snapshot and change tables, `ppc_ad_creative_snapshot_daily`, `ppc_ad_creative_diff_daily`, audience targeting tables, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
 
+### PMS Mews (Connector API)
+
+1. Run DDL: `sql/pms-mews-flight-recorder-tables.sql` (all tables `pms_mews_*_daily` and `pms_mews_*_diff_daily`; lowercase quoted column names; `record_json` VARIANT on snapshots).
+2. Set **Mews** variables in `.env` (see `env.example.txt`): `MEWS_CLIENT_TOKEN`, `MEWS_ACCESS_TOKEN`, optional `MEWS_ENTERPRISE_ID`, optional `MEWS_BASE_URL`, tuning keys such as `MEWS_SNAPSHOT_DAYS_BACK`, `MEWS_AVAILABILITY_BLOCK_HOURS`, optional `MEWS_SNOWFLAKE_WRITE_BATCH_ROWS` (default `5000` — rows per Snowflake `write_pandas` batch). **Chain ID** is taken from `configuration/get` (`Enterprise.ChainId`), not from env. **All enterprises** are loaded via paginated `enterprises/getAll` into `pms_mews_enterprises_daily` (empty if the token cannot call that endpoint).
+3. Regenerate DDL/column list from CSV samples after API shape changes:
+   ```bash
+   python scripts/generate_pms_mews_sql.py
+   ```
+4. Sync (writes snapshots; add `--diff` for day-over-day diff tables):
+   ```bash
+   python sync_mews.py --date 2025-03-21
+   python sync_mews.py --date 2025-03-21 --diff
+   python sync_mews.py --dry-run
+   ```
+   Code lives under `mews/` (`client.py`, `normalize.py`, `generated_schema.json`). The legacy `mews_apis/` folder at the repo root is reference-only; use this project for production sync.
+
 ## Run
 
 From the `ppc_flight_recorder` folder:

@@ -19,7 +19,11 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from config import (
+    MEWS_ACCESS_TOKEN,
+    MEWS_CLIENT_TOKEN,
+    MEWS_SYNC_DO_DIFF_ON_SCHEDULE,
     PPC_PROJECTS,
+    RUN_MEWS_SYNC_AFTER_DAILY_SYNC,
     SAVE_GA4_ON_DAILY_SYNC,
     SYNC_SCHEDULE_HOUR,
     SYNC_SCHEDULE_MINUTE,
@@ -32,6 +36,46 @@ logger = logging.getLogger(__name__)
 # Scheduler and state (set in lifespan)
 _scheduler = None
 _last_sync_result: Optional[dict] = None
+
+
+def _run_mews_after_ppc(snapshot_date: date, *, partial_ppc_sync: bool = False) -> None:
+    """Run PMS Mews flight recorder for the same snapshot_date as the PPC sync (sync_mews.run_sync)."""
+    if partial_ppc_sync:
+        logger.info(
+            "Skipping Mews post-sync for %s (partial PPC sync — control-state-only / keyword-only / …)",
+            snapshot_date.isoformat(),
+        )
+        return
+    if not RUN_MEWS_SYNC_AFTER_DAILY_SYNC:
+        logger.info("Mews post-sync disabled (RUN_MEWS_SYNC_AFTER_DAILY_SYNC unset/false)")
+        return
+    if not (MEWS_CLIENT_TOKEN and MEWS_ACCESS_TOKEN):
+        logger.info(
+            "Skipping Mews post-sync for %s (MEWS_CLIENT_TOKEN / MEWS_ACCESS_TOKEN not set)",
+            snapshot_date.isoformat(),
+        )
+        return
+    import sync_mews
+
+    logger.info(
+        "Starting Mews PMS flight recorder sync for snapshot_date=%s (do_diff=%s)",
+        snapshot_date.isoformat(),
+        MEWS_SYNC_DO_DIFF_ON_SCHEDULE,
+    )
+    try:
+        sync_mews.run_sync(
+            snapshot_date,
+            do_diff=MEWS_SYNC_DO_DIFF_ON_SCHEDULE,
+            dry_run=False,
+            no_snowflake=False,
+        )
+    except SystemExit as e:
+        # sync_mews.run_sync uses sys.exit on fatal misconfig; do not kill Uvicorn.
+        code = e.code if isinstance(e.code, int) else 1
+        if code != 0:
+            logger.error("Mews sync exited with code %s", code)
+            raise RuntimeError(f"Mews sync failed (sys.exit {code})") from None
+    logger.info("Mews PMS flight recorder sync completed for %s", snapshot_date.isoformat())
 
 
 def _run_daily_sync() -> None:
@@ -54,6 +98,7 @@ def _run_daily_sync() -> None:
             )
             completed.append(snapshot_date.isoformat())
             logger.info("Scheduled daily sync completed for %s", snapshot_date.isoformat())
+            _run_mews_after_ppc(snapshot_date, partial_ppc_sync=False)
         except Exception as e:
             last_error = str(e)
             logger.exception("Scheduled daily sync failed for %s: %s", snapshot_date.isoformat(), e)
@@ -205,6 +250,14 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
             control_state_device_only=control_state_device_only,
             control_state_conversions_only=control_state_conversions_only,
         )
+        partial = bool(
+            control_state_only
+            or control_state_keyword_only
+            or control_state_adgroup_only
+            or control_state_device_only
+            or control_state_conversions_only
+        )
+        _run_mews_after_ppc(snapshot_date, partial_ppc_sync=partial)
         return {
             "status": "ok",
             "snapshot_date": snapshot_date.isoformat(),
