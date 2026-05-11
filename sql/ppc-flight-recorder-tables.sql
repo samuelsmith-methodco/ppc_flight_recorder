@@ -128,8 +128,9 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_control_state_daily (
 -- ALTER TABLE ppc_campaign_control_state_daily ADD COLUMN IF NOT EXISTS active_bid_adj VARCHAR(256);
 
 -- ppc_campaign_control_diff_daily: Day-over-day changes in campaign control state.
---   changed_metric_name: Field that changed (e.g. daily_budget_amount, status, geo_target_ids).
---   old_value, new_value: Previous and new value. Rows only when value actually changed.
+--   changed_metric_name: Field that changed (e.g. daily_budget_amount, status, geo_target_ids),
+--     or campaign_added | campaign_removed when a campaign appears or disappears vs the prior snapshot.
+--   old_value, new_value: Previous and new value. For campaign_added, old_value is NULL and new_value is campaign_name.
 CREATE TABLE IF NOT EXISTS ppc_campaign_control_diff_daily (
     campaign_id VARCHAR(64) NOT NULL,
     snapshot_date DATE NOT NULL,
@@ -140,6 +141,55 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_control_diff_daily (
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (campaign_id, snapshot_date, customer_id, changed_metric_name)
 );
+
+-- Migration: Backfill campaign_added for Spacious Accommodations (campaign_id 23740783102) on 2026-04-08.
+-- Run once if the state snapshot exists but the diff row was missing before campaign_added was emitted by sync.
+-- MERGE INTO ppc_campaign_control_diff_daily AS target
+-- USING (
+--     SELECT
+--         '23740783102' AS campaign_id,
+--         '2026-04-08'::DATE AS snapshot_date,
+--         '8945413609' AS customer_id,
+--         'campaign_added' AS changed_metric_name,
+--         NULL AS old_value,
+--         'Spacious Accommodations' AS new_value
+-- ) AS source
+-- ON target.campaign_id = source.campaign_id
+--    AND target.snapshot_date = source.snapshot_date
+--    AND target.customer_id = source.customer_id
+--    AND target.changed_metric_name = source.changed_metric_name
+-- WHEN MATCHED THEN UPDATE SET
+--     old_value = source.old_value,
+--     new_value = source.new_value
+-- WHEN NOT MATCHED THEN INSERT (campaign_id, snapshot_date, customer_id, changed_metric_name, old_value, new_value)
+-- VALUES (source.campaign_id, source.snapshot_date, source.customer_id, source.changed_metric_name, source.old_value, source.new_value);
+-- Migration: Backfill all missing campaign_added rows for customer_id 8945413609 on 2026-04-08.
+-- INSERT INTO ppc_campaign_control_diff_daily (campaign_id, snapshot_date, customer_id, changed_metric_name, old_value, new_value)
+-- SELECT
+--     cur.campaign_id,
+--     cur.snapshot_date,
+--     cur.customer_id,
+--     'campaign_added',
+--     NULL,
+--     cur.campaign_name
+-- FROM ppc_campaign_control_state_daily cur
+-- WHERE cur.snapshot_date = '2026-04-08'::DATE
+--   AND cur.customer_id = '8945413609'
+--   AND NOT EXISTS (
+--       SELECT 1
+--       FROM ppc_campaign_control_state_daily prev
+--       WHERE prev.campaign_id = cur.campaign_id
+--         AND prev.customer_id = cur.customer_id
+--         AND prev.snapshot_date = DATEADD(day, -1, cur.snapshot_date)
+--   )
+--   AND NOT EXISTS (
+--       SELECT 1
+--       FROM ppc_campaign_control_diff_daily d
+--       WHERE d.campaign_id = cur.campaign_id
+--         AND d.snapshot_date = cur.snapshot_date
+--         AND d.customer_id = cur.customer_id
+--         AND d.changed_metric_name = 'campaign_added'
+--   );
 
 -- ppc_campaign_geo_targeting_daily: Geo & location targeting audit (one row per campaign criterion per day). v23 GAQL spec.
 --   criterion_id: campaign_criterion.criterion_id (stable across days for diff tracking).

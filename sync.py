@@ -227,9 +227,14 @@ def _format_diff_value(v: Any, max_len: int = 65535) -> Optional[str]:
     return s[:max_len] if len(s) > max_len else s
 
 
+def _control_state_campaign_id_key(campaign_id: Any) -> str:
+    return "" if campaign_id is None else str(campaign_id).strip()
+
+
 def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
+    campaign_id = _control_state_campaign_id_key(row.get("campaign_id"))
     return {
-        "campaign_id": row.get("campaign_id"), "campaign_name": row.get("campaign_name"),
+        "campaign_id": campaign_id or None, "campaign_name": row.get("campaign_name"),
         "status": row.get("status"), "advertising_channel_type": row.get("advertising_channel_type"),
         "advertising_channel_sub_type": row.get("advertising_channel_sub_type"),
         "daily_budget_micros": row.get("daily_budget_micros"), "daily_budget_amount": row.get("daily_budget_amount"),
@@ -257,14 +262,28 @@ def _control_state_row_for_storage(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Compare control state metrics day-over-day; return list for ppc_campaign_control_diff_daily.
-    Only adds a row when the value has actually changed (normalized comparison); never adds when old_value and new_value would be the same.
+    Emits campaign_added and campaign_removed, plus per-field changes when values actually differ.
     """
-    prior_by_cid = {r["campaign_id"]: r for r in prior}
+    prior_by_cid = {
+        _control_state_campaign_id_key(r.get("campaign_id")): r
+        for r in prior
+        if _control_state_campaign_id_key(r.get("campaign_id"))
+    }
+    current_by_cid = {
+        _control_state_campaign_id_key(r.get("campaign_id")): r
+        for r in current
+        if _control_state_campaign_id_key(r.get("campaign_id"))
+    }
     diffs = []
-    for cur in current:
-        cid = cur.get("campaign_id")
-        prev = prior_by_cid.get(cid)
-        if not prev:
+    for cid_key, cur in current_by_cid.items():
+        prev = prior_by_cid.get(cid_key)
+        if prev is None:
+            diffs.append({
+                "campaign_id": cur.get("campaign_id") or cid_key,
+                "changed_metric_name": "campaign_added",
+                "old_value": None,
+                "new_value": _format_diff_value(cur.get("campaign_name") or cid_key),
+            })
             continue
         for field in CONTROL_STATE_METRIC_FIELDS:
             ov, nv = prev.get(field), cur.get(field)
@@ -292,11 +311,20 @@ def compute_control_state_diffs(current: List[Dict[str, Any]], prior: List[Dict[
             if old_str == new_str:
                 continue
             diffs.append({
-                "campaign_id": cid,
+                "campaign_id": cur.get("campaign_id") or cid_key,
                 "changed_metric_name": field,
                 "old_value": old_str,
                 "new_value": new_str,
             })
+    for cid_key, prev in prior_by_cid.items():
+        if cid_key in current_by_cid:
+            continue
+        diffs.append({
+            "campaign_id": prev.get("campaign_id") or cid_key,
+            "changed_metric_name": "campaign_removed",
+            "old_value": _format_diff_value(prev.get("campaign_name") or cid_key),
+            "new_value": None,
+        })
     return diffs
 
 

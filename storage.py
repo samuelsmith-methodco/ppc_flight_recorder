@@ -318,7 +318,12 @@ def get_control_state_for_date(customer_id: str, snapshot_date: date, conn: Opti
     if df.empty:
         return []
     df.columns = [c.lower() for c in df.columns]
-    return df.to_dict("records")
+    records = df.to_dict("records")
+    for row in records:
+        cid = row.get("campaign_id")
+        if cid is not None:
+            row["campaign_id"] = str(cid).strip()
+    return records
 
 
 def _target_roas_diff_equal(old_val: Any, new_val: Any) -> bool:
