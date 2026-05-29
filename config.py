@@ -43,6 +43,7 @@ GOOGLE_ADS_CUSTOMER_ID_THENICKEL = os.getenv("GOOGLE_ADS_CUSTOMER_ID_THENICKEL",
 GOOGLE_ADS_CUSTOMER_ID_THEQUOIN = os.getenv("GOOGLE_ADS_CUSTOMER_ID_THEQUOIN", "")
 GOOGLE_ADS_CUSTOMER_ID_ANTHOLOGY = os.getenv("GOOGLE_ADS_CUSTOMER_ID_ANTHOLOGY", "")
 GOOGLE_ADS_CUSTOMER_ID_MYROOST = os.getenv("GOOGLE_ADS_CUSTOMER_ID_MYROOST", "")
+GOOGLE_ADS_CUSTOMER_ID_WM_MULHERINS_SONS = os.getenv("GOOGLE_ADS_CUSTOMER_ID_WM_MULHERINS_SONS", "")
 
 # GA4 (Apps Script)
 GA4_MARKETING_API_URL = os.getenv("GA4_MARKETING_API_URL", "")
@@ -137,6 +138,7 @@ def get_google_ads_customer_id(project: str) -> Optional[str]:
         "anthology": GOOGLE_ADS_CUSTOMER_ID_ANTHOLOGY or GOOGLE_ADS_CUSTOMER_ID,
         "myroost-com": GOOGLE_ADS_CUSTOMER_ID_MYROOST or GOOGLE_ADS_CUSTOMER_ID,
         "myroost": GOOGLE_ADS_CUSTOMER_ID_MYROOST or GOOGLE_ADS_CUSTOMER_ID,
+        "wm-mulherins-sons": GOOGLE_ADS_CUSTOMER_ID_WM_MULHERINS_SONS or GOOGLE_ADS_CUSTOMER_ID,
     }
     roost = [
         "roost-midtown", "roost-east-market", "roost-baltimore", "roost-washington-dc",
