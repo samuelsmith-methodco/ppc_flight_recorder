@@ -102,7 +102,7 @@ MEWS_SNOWFLAKE_WRITE_BATCH_ROWS = int(os.getenv("MEWS_SNOWFLAKE_WRITE_BATCH_ROWS
 MEWS_ALL_FETCH_DATA_START_DATE = os.getenv("MEWS_ALL_FETCH_DATA_START_DATE", "2021-01-01")
 
 # Projects to sync (comma-separated)
-PPC_PROJECTS = os.getenv("PPC_PROJECTS", "the-pinch")
+PPC_PROJECTS = os.getenv("PPC_PROJECTS", "the_pinch_charleston")
 
 # Daily sync scheduler (server only): timezone and local time (24h)
 # Use IANA timezone (e.g. America/New_York for EST/EDT). Hour/minute are in that timezone.
@@ -154,16 +154,16 @@ def normalize_customer_id(customer_id: Optional[str]) -> str:
 def get_google_ads_customer_id(project: str) -> Optional[str]:
     """Resolve Google Ads customer ID for a project name."""
     mapping = {
-        "the-nickel": GOOGLE_ADS_CUSTOMER_ID_THENICKEL or GOOGLE_ADS_CUSTOMER_ID,
-        "the-quoin": GOOGLE_ADS_CUSTOMER_ID_THEQUOIN or GOOGLE_ADS_CUSTOMER_ID,
+        "the_nickel_hotel": GOOGLE_ADS_CUSTOMER_ID_THENICKEL or GOOGLE_ADS_CUSTOMER_ID,
+        "the_quoin_hotel": GOOGLE_ADS_CUSTOMER_ID_THEQUOIN or GOOGLE_ADS_CUSTOMER_ID,
         "anthology": GOOGLE_ADS_CUSTOMER_ID_ANTHOLOGY or GOOGLE_ADS_CUSTOMER_ID,
-        "myroost-com": GOOGLE_ADS_CUSTOMER_ID_MYROOST or GOOGLE_ADS_CUSTOMER_ID,
+        "myroost_com": GOOGLE_ADS_CUSTOMER_ID_MYROOST or GOOGLE_ADS_CUSTOMER_ID,
         "myroost": GOOGLE_ADS_CUSTOMER_ID_MYROOST or GOOGLE_ADS_CUSTOMER_ID,
-        "wm-mulherins-sons": GOOGLE_ADS_CUSTOMER_ID_WM_MULHERINS_SONS or GOOGLE_ADS_CUSTOMER_ID,
+        "wm_mulherins_sons": GOOGLE_ADS_CUSTOMER_ID_WM_MULHERINS_SONS or GOOGLE_ADS_CUSTOMER_ID,
     }
     roost = [
-        "roost-midtown", "roost-east-market", "roost-baltimore", "roost-washington-dc",
-        "roost-tampa", "roost-cleveland", "roost-detroit", "roost-rainey", "roost-philadelphia",
+        "roost_midtown", "roost_east_market", "roost_baltimore", "roost_white_house",
+        "roost_tampa", "roost_cleveland", "roost_detroit", "roost_rainey", "roost_philadelphia",
     ]
     if project in roost:
         return GOOGLE_ADS_CUSTOMER_ID_MYROOST or GOOGLE_ADS_CUSTOMER_ID

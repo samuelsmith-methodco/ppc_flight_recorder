@@ -9,7 +9,7 @@ So we have two diff tables for Google Ads (control + outcomes) and one for GA4.
   cd ppc_flight_recorder
   pip install -r requirements.txt
   copy env.example.txt to .env and set credentials
-  python sync.py [--date YYYY-MM-DD] [--project the-pinch] [--ga4]
+  python sync.py [--date YYYY-MM-DD] [--project the_pinch_charleston] [--ga4]
   Historical (1-year backfill):
   python sync.py --start-date 2024-02-06 --end-date 2025-02-06 [--batch-days 30] [--ga4] [--diffs]
 """
@@ -1626,7 +1626,7 @@ def main() -> None:
     parser.add_argument("--control-state-conversions-only", action="store_true", help="Update only conversion definitions (ppc_conversion_action_daily, ppc_conversion_action_diff_daily)")
     args = parser.parse_args()
 
-    projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
+    projects = [args.project] if args.project else [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the_pinch_charleston"]
 
     if args.start_date and args.end_date:
         try:

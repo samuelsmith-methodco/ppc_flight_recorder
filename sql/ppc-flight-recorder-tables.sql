@@ -39,7 +39,7 @@
 --   UPDATE ppc_negative_keyword_diff_daily SET ad_group_id = '' WHERE ad_group_id IS NULL;
 -- Migration: Google Ads tables use customer_id (Google Ads customer ID) instead of project name.
 --   For existing tables run for each Google Ads table: ALTER TABLE <tbl> RENAME COLUMN project TO customer_id;
---   Then backfill: UPDATE <tbl> SET customer_id = '8945413609' WHERE customer_id = 'the-pinch'; (repeat per project).
+--   Then backfill: UPDATE <tbl> SET customer_id = '8945413609' WHERE customer_id = 'the_pinch_charleston'; (repeat per project).
 -- GA4 tables (ppc_ga4_*) keep project. Google Ads tables: control_state, outcomes, outcomes_diff, *_dims use customer_id.
 -- Google Ads provides at ad_group: id, name, campaign; at keyword_view: criterion_id,
 -- keyword.text, match_type, ad_group, campaign; metrics: impressions, clicks, cost_micros,
@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS ppc_campaign_outcomes_daily (
 );
 
 -- ppc_ga4_traffic_acquisition_daily: Legacy GA4 traffic acquisition only. Prefer ppc_ga4_acquisition_daily for all report types.
---   project: GA4 property ID (e.g. the-pinch). dimension_type/dimension_value: Breakdown (e.g. session_medium/social).
+--   project: GA4 property ID (e.g. the_pinch_charleston). dimension_type/dimension_value: Breakdown (e.g. session_medium/social).
 CREATE TABLE IF NOT EXISTS ppc_ga4_traffic_acquisition_daily (
     project VARCHAR(128) NOT NULL,
     acquisition_date DATE NOT NULL,

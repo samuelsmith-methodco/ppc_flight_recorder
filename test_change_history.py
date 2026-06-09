@@ -8,7 +8,7 @@ Usage:
   python test_change_history.py
   python test_change_history.py --date 2026-02-11
   python test_change_history.py --days 7
-  python test_change_history.py --days 30 --project the-pinch
+  python test_change_history.py --days 30 --project the_pinch_charleston
   python test_change_history.py --dry-run
 """
 

@@ -36,7 +36,7 @@ Edit `.env` and set:
 | **Snowflake** | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA` |
 | **Google Ads** | `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, and per-project `GOOGLE_ADS_CUSTOMER_ID_*` or `GOOGLE_ADS_CUSTOMER_ID` |
 | **GA4** | `GA4_MARKETING_API_URL` – deployed Apps Script “exec” URL. The handler for `type: "traffic_acquisition_daily"` lives in this repo under `gs_backend/` (TrafficAcquisitionDaily.gs + Post.gs); deploy that web app and use its URL here. |
-| **PPC** | `PPC_PROJECTS` – comma-separated list (e.g. `the-pinch,the-nickel`); default `the-pinch` |
+| **PPC** | `PPC_PROJECTS` – comma-separated list (e.g. `the_pinch_charleston,the_nickel_hotel`); default `the_pinch_charleston` |
 | **Scheduler** (server only) | `SYNC_SCHEDULE_TIMEZONE` (e.g. `America/New_York`), `SYNC_SCHEDULE_HOUR` (0–23), `SYNC_SCHEDULE_MINUTE` (0–59); default 9:30 PM EST |
 
 Do **not** commit `.env`.
@@ -98,7 +98,7 @@ python sync.py
 python sync.py --date 2026-02-06
 
 # Single project
-python sync.py --project the-pinch
+python sync.py --project the_pinch_charleston
 
 # Include GA4 traffic acquisition
 python sync.py --ga4

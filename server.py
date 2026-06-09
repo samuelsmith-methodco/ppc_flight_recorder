@@ -95,7 +95,7 @@ def _run_daily_sync() -> None:
     today = date.today()
     # Sync: yesterday only
     dates_to_sync = [today - timedelta(days=1)]
-    projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
+    projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the_pinch_charleston"]
     completed = []
     last_error = None
     for snapshot_date in dates_to_sync:
@@ -356,7 +356,7 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     control_state_adgroup_only = bool(body and body.control_state_adgroup_only)
     control_state_device_only = bool(body and body.control_state_device_only)
     control_state_conversions_only = bool(body and body.control_state_conversions_only)
-    projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the-pinch"]
+    projects = [p.strip() for p in PPC_PROJECTS.split(",") if p.strip()] or ["the_pinch_charleston"]
     try:
         run_sync(
             snapshot_date=snapshot_date,
