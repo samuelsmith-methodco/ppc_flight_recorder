@@ -56,6 +56,20 @@ sql/ppc-flight-recorder-tables.sql
 
 Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, `ppc_campaign_geo_targeting_daily`, `ppc_campaign_geo_targeting_diff_daily`, `ppc_campaign_outcomes_daily`, `ppc_campaign_outcomes_diff_daily`, `ppc_ad_group_outcomes_daily`, `ppc_ad_group_outcomes_diff_daily`, `ppc_keyword_outcomes_daily`, `ppc_keyword_outcomes_diff_daily`, keyword/negative keyword snapshot and diff tables, ad group snapshot and change tables, `ppc_ad_creative_snapshot_daily`, `ppc_ad_creative_diff_daily`, audience targeting tables, `ppc_ga4_traffic_acquisition_daily`, `ppc_ga4_acquisition_daily`, `ppc_ga4_acquisition_diff_daily`.
 
+### IDeaS G3 (SFTPCloud flight recorder)
+
+1. Run DDL: `sql/ideas-flight-recorder-tables.sql` (all `ideas_flight_recorder_*` tables).
+2. Set **IDeaS SFTP** variables in `.env`: `IDEAS_SFTP_USERNAME`, `IDEAS_SFTP_PASSWORD`, optional `IDEAS_SFTP_HOST`, `IDEAS_SFTP_REMOTE_DIR`.
+3. Sync (loads archives in memory; **delete + insert** per snapshot):
+   ```bash
+   python sync_ideas.py                    # yesterday + today delivery dates (default)
+   python sync_ideas.py --date 2026-06-08  # one delivery date
+   python sync_ideas.py --from-date 2026-05-24
+   python sync_ideas.py --test-sftp
+   ```
+4. **Scheduler** (when running `uvicorn server:app`): IDeaS runs at **9:00 AM** by default (`IDEAS_SYNC_SCHEDULE_HOUR=9`), syncing **yesterday and today** delivery dates. PPC/Mews still run at 9:30 PM for **yesterday only**.
+5. Manual API: `POST /sync/ideas` (optional body `{"date": "YYYY-MM-DD"}`).
+
 ### PMS Mews (Connector API)
 
 1. Run DDL: `sql/pms-mews-flight-recorder-tables.sql` (all tables `pms_mews_*_daily` and `pms_mews_*_diff_daily`; lowercase quoted column names; `record_json` VARIANT on snapshots).

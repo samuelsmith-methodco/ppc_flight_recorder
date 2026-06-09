@@ -1,13 +1,15 @@
 """
 PPC Flight Recorder – FastAPI server with daily sync scheduler.
 
-Runs Uvicorn on port 9001. Scheduler runs daily sync (Google Ads + GA4 + diffs) at a set time.
+Runs Uvicorn on port 9001. Schedulers:
+  - PPC (+ optional Mews): default 9:30 PM — syncs yesterday only
+  - IDeaS G3: default 9:00 AM — syncs yesterday + today delivery dates
 
   cd ppc_flight_recorder
   pip install -r requirements.txt
   uvicorn server:app --host 0.0.0.0 --port 9001
 
-  Optional .env: SYNC_SCHEDULE_TIMEZONE, SYNC_SCHEDULE_HOUR, SYNC_SCHEDULE_MINUTE (default 9:30 PM America/New_York).
+  Optional .env: SYNC_SCHEDULE_*, IDEAS_SYNC_SCHEDULE_*, IDEAS_SFTP_*, MEWS_*, etc.
 """
 
 import logging
@@ -19,10 +21,16 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from config import (
+    IDEAS_SFTP_PASSWORD,
+    IDEAS_SFTP_USERNAME,
+    IDEAS_SYNC_SCHEDULE_HOUR,
+    IDEAS_SYNC_SCHEDULE_MINUTE,
+    IDEAS_SYNC_SCHEDULE_TIMEZONE,
     MEWS_ACCESS_TOKEN,
     MEWS_CLIENT_TOKEN,
     MEWS_SYNC_DO_DIFF_ON_SCHEDULE,
     PPC_PROJECTS,
+    RUN_IDEAS_SYNC_ON_SCHEDULE,
     RUN_MEWS_SYNC_AFTER_DAILY_SYNC,
     SAVE_GA4_ON_DAILY_SYNC,
     SYNC_SCHEDULE_HOUR,
@@ -36,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Scheduler and state (set in lifespan)
 _scheduler = None
 _last_sync_result: Optional[dict] = None
+_last_ideas_sync_result: Optional[dict] = None
 
 
 def _run_mews_after_ppc(snapshot_date: date, *, partial_ppc_sync: bool = False) -> None:
@@ -117,6 +126,35 @@ def _run_daily_sync() -> None:
     logger.info("Scheduled daily sync completed for all dates: %s", ", ".join(completed))
 
 
+def _run_ideas_daily_sync() -> None:
+    """Run IDeaS sync for yesterday and today delivery dates (delete + insert per archive)."""
+    global _last_ideas_sync_result
+    from ideas_storage import default_delivery_dates, run_sync
+
+    if not IDEAS_SFTP_USERNAME or not IDEAS_SFTP_PASSWORD:
+        logger.info("Skipping IDeaS scheduled sync (IDEAS_SFTP_USERNAME / IDEAS_SFTP_PASSWORD not set)")
+        _last_ideas_sync_result = {"status": "skipped", "reason": "missing SFTP credentials"}
+        return
+
+    delivery_dates = default_delivery_dates()
+    logger.info("Starting IDeaS scheduled sync for delivery dates: %s", ", ".join(delivery_dates))
+    try:
+        result = run_sync(delivery_dates=delivery_dates, no_update_existing=False)
+        _last_ideas_sync_result = result
+        if result.get("status") == "error":
+            logger.error("IDeaS scheduled sync aborted: %s", result.get("error"))
+            return
+        logger.info(
+            "IDeaS scheduled sync completed: processed=%s skipped=%s",
+            result.get("archives_processed"),
+            result.get("archives_skipped"),
+        )
+    except Exception as exc:
+        logger.exception("IDeaS scheduled sync failed: %s", exc)
+        _last_ideas_sync_result = {"status": "error", "error": str(exc), "delivery_dates": delivery_dates}
+        return
+
+
 def _get_scheduler():
     from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -128,6 +166,15 @@ def _get_scheduler():
         minute=SYNC_SCHEDULE_MINUTE,
         id="daily_sync",
     )
+    if RUN_IDEAS_SYNC_ON_SCHEDULE:
+        sched.add_job(
+            _run_ideas_daily_sync,
+            trigger="cron",
+            hour=IDEAS_SYNC_SCHEDULE_HOUR,
+            minute=IDEAS_SYNC_SCHEDULE_MINUTE,
+            id="ideas_daily_sync",
+            timezone=IDEAS_SYNC_SCHEDULE_TIMEZONE,
+        )
     return sched
 
 
@@ -157,8 +204,10 @@ async def lifespan(app: FastAPI):
     next_run = job.next_run_time if job else None
     time_left = _format_time_until(next_run)
     next_iso = next_run.isoformat() if next_run else "?"
+    ideas_job = _scheduler.get_job("ideas_daily_sync") if RUN_IDEAS_SYNC_ON_SCHEDULE else None
+    ideas_next = ideas_job.next_run_time if ideas_job else None
     logger.info(
-        "Scheduler started: daily sync at %02d:%02d %s (yesterday%s); next run in %s (%s)",
+        "Scheduler started: PPC daily sync at %02d:%02d %s (yesterday%s); next in %s (%s)",
         SYNC_SCHEDULE_HOUR,
         SYNC_SCHEDULE_MINUTE,
         SYNC_SCHEDULE_TIMEZONE,
@@ -166,6 +215,15 @@ async def lifespan(app: FastAPI):
         time_left,
         next_iso,
     )
+    if RUN_IDEAS_SYNC_ON_SCHEDULE:
+        logger.info(
+            "Scheduler started: IDeaS daily sync at %02d:%02d %s (yesterday + today); next in %s (%s)",
+            IDEAS_SYNC_SCHEDULE_HOUR,
+            IDEAS_SYNC_SCHEDULE_MINUTE,
+            IDEAS_SYNC_SCHEDULE_TIMEZONE,
+            _format_time_until(ideas_next),
+            ideas_next.isoformat() if ideas_next else "?",
+        )
     yield
     if _scheduler:
         _scheduler.shutdown(wait=False)
@@ -175,7 +233,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PPC Flight Recorder",
-    description="Daily sync of Google Ads and GA4 data to Snowflake, with optional manual trigger.",
+    description="Daily sync of Google Ads, GA4, Mews PMS, and IDeaS G3 data to Snowflake.",
     lifespan=lifespan,
 )
 
@@ -188,13 +246,26 @@ def health():
 
 @app.get("/schedule")
 def schedule():
-    """Return current schedule, next run time, and hours/minutes until next run."""
+    """Return current schedules, next run times, and last sync results."""
     if not _scheduler:
         return {"scheduler": "not_running", "schedule": None}
     job = _scheduler.get_job("daily_sync")
     next_run = job.next_run_time if job else None
     next_run_iso = next_run.isoformat() if next_run else None
     time_left = _format_time_until(next_run)
+    ideas_payload = None
+    if RUN_IDEAS_SYNC_ON_SCHEDULE:
+        ideas_job = _scheduler.get_job("ideas_daily_sync")
+        ideas_next = ideas_job.next_run_time if ideas_job else None
+        ideas_payload = {
+            "timezone": IDEAS_SYNC_SCHEDULE_TIMEZONE,
+            "hour": IDEAS_SYNC_SCHEDULE_HOUR,
+            "minute": IDEAS_SYNC_SCHEDULE_MINUTE,
+            "next_run": ideas_next.isoformat() if ideas_next else None,
+            "next_run_in": _format_time_until(ideas_next),
+            "delivery_dates": "yesterday_and_today",
+            "last_sync": _last_ideas_sync_result,
+        }
     return {
         "scheduler": "running",
         "schedule": {
@@ -203,7 +274,9 @@ def schedule():
             "minute": SYNC_SCHEDULE_MINUTE,
             "next_run": next_run_iso,
             "next_run_in": time_left,
+            "snapshot_date": "yesterday",
         },
+        "ideas_schedule": ideas_payload,
         "last_sync": _last_sync_result,
     }
 
@@ -215,6 +288,51 @@ class SyncRequest(BaseModel):
     control_state_adgroup_only: Optional[bool] = False  # If true, update only ad group snapshot and diff
     control_state_device_only: Optional[bool] = False  # If true, update only device targeting (ppc_ad_group_device_modifier_daily, _diff_daily)
     control_state_conversions_only: Optional[bool] = False  # If true, update only conversion definitions (ppc_conversion_action_daily, _diff_daily)
+
+
+class IdeasSyncRequest(BaseModel):
+    date: Optional[str] = None  # YYYY-MM-DD delivery date; default yesterday + today
+    from_date: Optional[str] = None
+    no_update_existing: Optional[bool] = False
+
+
+@app.post("/sync/ideas")
+def trigger_ideas_sync(body: Optional[IdeasSyncRequest] = Body(None)):
+    """
+    Run IDeaS G3 flight recorder sync (SFTP → Snowflake, delete + insert per snapshot).
+    Default: yesterday and today delivery dates. Optional body: {"date": "YYYY-MM-DD"}.
+    """
+    from ideas.sftp_client import normalize_date
+    from ideas_storage import default_delivery_dates, run_sync
+
+    if not IDEAS_SFTP_USERNAME or not IDEAS_SFTP_PASSWORD:
+        raise HTTPException(status_code=400, detail="IDEAS_SFTP_USERNAME / IDEAS_SFTP_PASSWORD not configured")
+
+    delivery_dates: Optional[list[str]] = None
+    from_date: Optional[str] = None
+    no_update_existing = bool(body and body.no_update_existing)
+
+    if body and body.date and body.from_date:
+        raise HTTPException(status_code=400, detail="Use only one of date or from_date")
+    if body and body.date:
+        delivery_dates = [normalize_date(body.date)]
+    elif body and body.from_date:
+        from_date = normalize_date(body.from_date)
+    else:
+        delivery_dates = default_delivery_dates()
+
+    try:
+        result = run_sync(
+            delivery_dates=delivery_dates,
+            from_date=from_date,
+            no_update_existing=no_update_existing,
+        )
+        global _last_ideas_sync_result
+        _last_ideas_sync_result = result
+        return result
+    except Exception as e:
+        logger.exception("Manual IDeaS sync failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/sync")

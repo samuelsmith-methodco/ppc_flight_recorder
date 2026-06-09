@@ -122,6 +122,27 @@ MEWS_SYNC_DO_DIFF_ON_SCHEDULE = os.getenv("MEWS_SYNC_DO_DIFF_ON_SCHEDULE", "").s
     "yes",
 )
 
+# ----- IDeaS G3 Flight Recorder (SFTPCloud daily archives) -----
+IDEAS_SFTP_HOST = os.getenv("IDEAS_SFTP_HOST", "us-east-1.sftpcloud.io")
+IDEAS_SFTP_PORT = int(os.getenv("IDEAS_SFTP_PORT", "22"))
+IDEAS_FTPS_PORT = int(os.getenv("IDEAS_FTPS_PORT", "21"))
+IDEAS_SFTP_USERNAME = os.getenv("IDEAS_SFTP_USERNAME", "")
+IDEAS_SFTP_PASSWORD = os.getenv("IDEAS_SFTP_PASSWORD", "")
+IDEAS_SFTP_REMOTE_DIR = os.getenv("IDEAS_SFTP_REMOTE_DIR", "/")
+IDEAS_SFTP_PROTOCOL = os.getenv("IDEAS_SFTP_PROTOCOL", "auto").lower()
+IDEAS_SFTP_MAX_RETRIES = int(os.getenv("IDEAS_SFTP_MAX_RETRIES", "3"))
+IDEAS_SFTP_RETRY_BACKOFF_SEC = float(os.getenv("IDEAS_SFTP_RETRY_BACKOFF_SEC", "2.0"))
+
+# IDeaS daily scheduler (server only): default 9:00 AM in SYNC_SCHEDULE_TIMEZONE
+IDEAS_SYNC_SCHEDULE_TIMEZONE = os.getenv("IDEAS_SYNC_SCHEDULE_TIMEZONE", SYNC_SCHEDULE_TIMEZONE)
+IDEAS_SYNC_SCHEDULE_HOUR = int(os.getenv("IDEAS_SYNC_SCHEDULE_HOUR", "9"))
+IDEAS_SYNC_SCHEDULE_MINUTE = int(os.getenv("IDEAS_SYNC_SCHEDULE_MINUTE", "0"))
+RUN_IDEAS_SYNC_ON_SCHEDULE = os.getenv("RUN_IDEAS_SYNC_ON_SCHEDULE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 
 def normalize_customer_id(customer_id: Optional[str]) -> str:
     """Normalize Google Ads customer ID for storage (no dashes)."""
