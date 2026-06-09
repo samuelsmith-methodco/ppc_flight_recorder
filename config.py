@@ -144,6 +144,21 @@ RUN_IDEAS_SYNC_ON_SCHEDULE = os.getenv("RUN_IDEAS_SYNC_ON_SCHEDULE", "1").strip(
 )
 
 
+# ----- Lighthouse Rates Flight Recorder (Lighthouse API v3 -> Snowflake; self-contained) -----
+LIGHTHOUSE_RATE_API_TOKEN = os.getenv("LIGHTHOUSE_RATE_API_TOKEN", "")
+LIGHTHOUSE_RATE_API_BASE_URL = os.getenv("LIGHTHOUSE_RATE_API_BASE_URL", "https://api.mylighthouse.com/v3").rstrip("/")
+# Lighthouse daily scheduler (server only): default 9:30 AM in SYNC_SCHEDULE_TIMEZONE.
+# Lighthouse shops rates early morning (~04:00 ET), so mid-morning captures fresh extracts.
+LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE = os.getenv("LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE", SYNC_SCHEDULE_TIMEZONE)
+LIGHTHOUSE_SYNC_SCHEDULE_HOUR = int(os.getenv("LIGHTHOUSE_SYNC_SCHEDULE_HOUR", "9"))
+LIGHTHOUSE_SYNC_SCHEDULE_MINUTE = int(os.getenv("LIGHTHOUSE_SYNC_SCHEDULE_MINUTE", "30"))
+RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE = os.getenv("RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
 def normalize_customer_id(customer_id: Optional[str]) -> str:
     """Normalize Google Ads customer ID for storage (no dashes)."""
     if not customer_id:

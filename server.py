@@ -4,6 +4,7 @@ PPC Flight Recorder – FastAPI server with daily sync scheduler.
 Runs Uvicorn on port 9001. Schedulers:
   - PPC (+ optional Mews): default 9:30 PM — syncs yesterday only
   - IDeaS G3: default 9:00 AM — syncs yesterday + today delivery dates
+  - Lighthouse rates: default 9:30 AM — records today's rates/parity snapshot
 
   cd ppc_flight_recorder
   pip install -r requirements.txt
@@ -26,6 +27,10 @@ from config import (
     IDEAS_SYNC_SCHEDULE_HOUR,
     IDEAS_SYNC_SCHEDULE_MINUTE,
     IDEAS_SYNC_SCHEDULE_TIMEZONE,
+    LIGHTHOUSE_SYNC_SCHEDULE_HOUR,
+    LIGHTHOUSE_SYNC_SCHEDULE_MINUTE,
+    LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
+    RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE,
     MEWS_ACCESS_TOKEN,
     MEWS_CLIENT_TOKEN,
     MEWS_SYNC_DO_DIFF_ON_SCHEDULE,
@@ -45,6 +50,7 @@ logger = logging.getLogger(__name__)
 _scheduler = None
 _last_sync_result: Optional[dict] = None
 _last_ideas_sync_result: Optional[dict] = None
+_last_lighthouse_sync_result: Optional[dict] = None
 
 
 def _run_mews_after_ppc(snapshot_date: date, *, partial_ppc_sync: bool = False) -> None:
@@ -155,6 +161,20 @@ def _run_ideas_daily_sync() -> None:
         return
 
 
+def _run_lighthouse_daily_sync() -> None:
+    """Run Lighthouse rates flight recorder snapshot (all subscriptions) for today."""
+    global _last_lighthouse_sync_result
+    from sync_lighthouse import run_sync
+
+    logger.info("Starting Lighthouse scheduled sync")
+    result = run_sync()
+    _last_lighthouse_sync_result = result
+    if result.get("status") == "error":
+        logger.error("Lighthouse scheduled sync failed: %s", result.get("error"))
+        return
+    logger.info("Lighthouse scheduled sync completed for snapshot_date=%s", result.get("snapshot_date"))
+
+
 def _get_scheduler():
     from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -174,6 +194,15 @@ def _get_scheduler():
             minute=IDEAS_SYNC_SCHEDULE_MINUTE,
             id="ideas_daily_sync",
             timezone=IDEAS_SYNC_SCHEDULE_TIMEZONE,
+        )
+    if RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE:
+        sched.add_job(
+            _run_lighthouse_daily_sync,
+            trigger="cron",
+            hour=LIGHTHOUSE_SYNC_SCHEDULE_HOUR,
+            minute=LIGHTHOUSE_SYNC_SCHEDULE_MINUTE,
+            id="lighthouse_daily_sync",
+            timezone=LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
         )
     return sched
 
@@ -224,6 +253,17 @@ async def lifespan(app: FastAPI):
             _format_time_until(ideas_next),
             ideas_next.isoformat() if ideas_next else "?",
         )
+    if RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE:
+        lh_job = _scheduler.get_job("lighthouse_daily_sync")
+        lh_next = lh_job.next_run_time if lh_job else None
+        logger.info(
+            "Scheduler started: Lighthouse daily sync at %02d:%02d %s (today snapshot); next in %s (%s)",
+            LIGHTHOUSE_SYNC_SCHEDULE_HOUR,
+            LIGHTHOUSE_SYNC_SCHEDULE_MINUTE,
+            LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
+            _format_time_until(lh_next),
+            lh_next.isoformat() if lh_next else "?",
+        )
     yield
     if _scheduler:
         _scheduler.shutdown(wait=False)
@@ -266,6 +306,19 @@ def schedule():
             "delivery_dates": "yesterday_and_today",
             "last_sync": _last_ideas_sync_result,
         }
+    lighthouse_payload = None
+    if RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE:
+        lh_job = _scheduler.get_job("lighthouse_daily_sync")
+        lh_next = lh_job.next_run_time if lh_job else None
+        lighthouse_payload = {
+            "timezone": LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
+            "hour": LIGHTHOUSE_SYNC_SCHEDULE_HOUR,
+            "minute": LIGHTHOUSE_SYNC_SCHEDULE_MINUTE,
+            "next_run": lh_next.isoformat() if lh_next else None,
+            "next_run_in": _format_time_until(lh_next),
+            "snapshot_date": "today",
+            "last_sync": _last_lighthouse_sync_result,
+        }
     return {
         "scheduler": "running",
         "schedule": {
@@ -277,6 +330,7 @@ def schedule():
             "snapshot_date": "yesterday",
         },
         "ideas_schedule": ideas_payload,
+        "lighthouse_schedule": lighthouse_payload,
         "last_sync": _last_sync_result,
     }
 
@@ -332,6 +386,36 @@ def trigger_ideas_sync(body: Optional[IdeasSyncRequest] = Body(None)):
         return result
     except Exception as e:
         logger.exception("Manual IDeaS sync failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class LighthouseSyncRequest(BaseModel):
+    hotels_only: Optional[bool] = False  # If true, refresh only lighthouse_hotels / lighthouse_hotel_competitors
+    subscription_ids: Optional[list[int]] = None  # Limit to specific Lighthouse subscription IDs
+
+
+@app.post("/sync/lighthouse")
+def trigger_lighthouse_sync(body: Optional[LighthouseSyncRequest] = Body(None)):
+    """
+    Run Lighthouse rates flight recorder snapshot (API -> Snowflake) for today.
+    Optional body: {"hotels_only": true} or {"subscription_ids": [164110]}.
+    """
+    from sync_lighthouse import run_sync
+
+    global _last_lighthouse_sync_result
+    try:
+        result = run_sync(
+            subscription_ids=body.subscription_ids if body else None,
+            hotels_only=bool(body and body.hotels_only),
+        )
+        _last_lighthouse_sync_result = result
+        if result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=result.get("error") or "Lighthouse sync failed")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Manual Lighthouse sync failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
