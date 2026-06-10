@@ -31,6 +31,7 @@ from ideas.sftp_client import (
     normalize_date,
     normalize_remote_dir,
     public_ip,
+    sftp_proxy_enabled,
 )
 from ideas_storage import default_delivery_dates, run_sync
 
@@ -62,6 +63,7 @@ def test_sftp(protocol: str) -> int:
     print(f"Host: {IDEAS_SFTP_HOST}")
     print(f"Username: {IDEAS_SFTP_USERNAME}")
     print(f"Public IP: {public_ip()}")
+    print(f"Proxy: {'enabled (SOCKS5)' if sftp_proxy_enabled() else 'disabled'}")
     print(f"Protocol: {protocol}")
     print()
     try:
