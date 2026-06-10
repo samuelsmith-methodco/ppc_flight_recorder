@@ -31,6 +31,9 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# ftplib.all_errors is already a tuple; concatenate instead of nesting in except.
+_FTPLIB_RETRY_EXCEPTIONS = (ConnectionError, OSError, TimeoutError) + ftplib.all_errors
+
 FILE_DATE_RE = re.compile(r"^\d{4}_(\d{8})_\d{4}\.tar\.gz$")
 
 T = TypeVar("T")
@@ -122,7 +125,7 @@ def _call_with_retries(label: str, fn: Callable[[], T]) -> T:
             return fn()
         except IdeasSftpError:
             raise
-        except (ConnectionError, OSError, TimeoutError, ftplib.all_errors) as exc:
+        except _FTPLIB_RETRY_EXCEPTIONS as exc:
             last_exc = exc
             logger.warning(
                 "IDeaS SFTP %s failed (attempt %d/%d): %s",
@@ -224,7 +227,7 @@ def connect_ftps() -> FtpsRemoteClient:
         ftp.prot_p()
     except ftplib.error_perm as exc:
         raise ConnectionError(f"FTPS authentication failed: {exc}") from exc
-    except (ftplib.all_errors, OSError, TimeoutError) as exc:
+    except _FTPLIB_RETRY_EXCEPTIONS as exc:
         raise ConnectionError(f"FTPS connection error: {exc}") from exc
 
     return FtpsRemoteClient(ftp)
