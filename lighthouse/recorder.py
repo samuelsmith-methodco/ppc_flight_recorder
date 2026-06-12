@@ -6,8 +6,8 @@ Each run captures, for every subscription (hotel) on the account:
   - Lowest Rates per Roomtype (/v3/roomtyperates)  per OTA, same window
   - Parity rates (/v3/parities)                    from today (API does not allow past fromDate)
 
-Results are MERGEd directly into Snowflake snapshot tables keyed by snapshot_date,
-so each day adds one immutable "layer" and re-running the same day is idempotent.
+Results are written to Snowflake snapshot tables keyed by snapshot_date:
+each run DELETEs existing rows for that snapshot_date, then INSERTs fresh data.
 Also refreshes the lighthouse_hotels / lighthouse_hotel_competitors dimension tables.
 
 Snowflake DDL: sql/lighthouse-rates-flight-recorder-tables.sql (auto-applied).
@@ -281,6 +281,30 @@ def _dedup_rows(rows, key_cols):
     return list(by_key.values())
 
 
+def replace_snapshot_rows(cursor, db_schema, table, col_spec, key_cols, rows, snapshot_date):
+    """Delete all rows for snapshot_date, then insert fresh rows (no upsert)."""
+    cursor.execute(
+        f"DELETE FROM {db_schema}.{table} WHERE snapshot_date = {_sql_val(snapshot_date, 'string')}"
+    )
+    rows = _dedup_rows(rows, key_cols)
+    if not rows:
+        log("SNOWFLAKE", f"{table}: deleted snapshot_date={snapshot_date}, inserted 0 row(s)")
+        return 0
+
+    cols = [c for c, _ in col_spec]
+    cols_str = ", ".join(cols)
+    total = 0
+    for batch_start in range(0, len(rows), SNOWFLAKE_UPLOAD_BATCH_SIZE):
+        batch = rows[batch_start : batch_start + SNOWFLAKE_UPLOAD_BATCH_SIZE]
+        values_str = ",\n        ".join(
+            "(" + ", ".join(_sql_val(r.get(c), kind) for c, kind in col_spec) + ")" for r in batch
+        )
+        cursor.execute(f"INSERT INTO {db_schema}.{table} ({cols_str}) VALUES {values_str}")
+        total += len(batch)
+    log("SNOWFLAKE", f"{table}: deleted snapshot_date={snapshot_date}, inserted {total} row(s)")
+    return total
+
+
 def merge_rows(cursor, db_schema, table, col_spec, key_cols, rows):
     """MERGE rows into a snapshot table in batches. Returns row count merged."""
     rows = _dedup_rows(rows, key_cols)
@@ -535,7 +559,7 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
         if skip_upload:
             log("recorder", "Skipping Snowflake upload (--skip-upload)")
             return True
-        return upload_to_snowflake([], [], [], hotel_rows, competitor_rows)
+        return upload_to_snowflake([], [], [], hotel_rows, competitor_rows, write_snapshots=False)
 
     if subscription_ids:
         hotels = [h for h in hotels if h.get("subscription_id") in subscription_ids]
@@ -617,12 +641,23 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
         log("recorder", "Skipping Snowflake upload (--skip-upload)")
         return len(errors) == 0
 
-    ok = upload_to_snowflake(rates_rows, roomtype_rows, parity_rows, hotel_rows, competitor_rows)
+    ok = upload_to_snowflake(
+        rates_rows, roomtype_rows, parity_rows, hotel_rows, competitor_rows,
+        snapshot_date=snapshot_date,
+    )
     return ok and len(errors) == 0
 
 
-def upload_to_snowflake(rates_rows, roomtype_rows, parity_rows, hotel_rows=None, competitor_rows=None):
-    """Create tables if needed, refresh hotel dimension tables and MERGE all snapshot rows."""
+def upload_to_snowflake(
+    rates_rows,
+    roomtype_rows,
+    parity_rows,
+    hotel_rows=None,
+    competitor_rows=None,
+    snapshot_date=None,
+    write_snapshots=True,
+):
+    """Create tables if needed, refresh hotel dimension tables and replace snapshot rows."""
     if not validate_snowflake_config():
         return False
 
@@ -649,9 +684,13 @@ def upload_to_snowflake(rates_rows, roomtype_rows, parity_rows, hotel_rows=None,
         if competitor_rows:
             replace_rows(cursor, db_schema, COMPETITORS_TABLE, COMPETITORS_COLS, competitor_rows)
 
-        merge_rows(cursor, db_schema, RATES_TABLE, RATES_COLS, RATES_KEYS, rates_rows)
-        merge_rows(cursor, db_schema, ROOMTYPE_TABLE, ROOMTYPE_COLS, ROOMTYPE_KEYS, roomtype_rows)
-        merge_rows(cursor, db_schema, PARITY_TABLE, PARITY_COLS, PARITY_KEYS, parity_rows)
+        if snapshot_date is None:
+            snapshot_date = date.today().isoformat()
+
+        if write_snapshots:
+            replace_snapshot_rows(cursor, db_schema, RATES_TABLE, RATES_COLS, RATES_KEYS, rates_rows, snapshot_date)
+            replace_snapshot_rows(cursor, db_schema, ROOMTYPE_TABLE, ROOMTYPE_COLS, ROOMTYPE_KEYS, roomtype_rows, snapshot_date)
+            replace_snapshot_rows(cursor, db_schema, PARITY_TABLE, PARITY_COLS, PARITY_KEYS, parity_rows, snapshot_date)
         conn.commit()
         log("SNOWFLAKE", "Upload complete")
         return True
