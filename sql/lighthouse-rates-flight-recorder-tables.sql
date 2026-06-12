@@ -50,9 +50,9 @@ COMMENT ON COLUMN lighthouse_hotel_competitors.hotel_id IS 'Client hotel ID of t
 COMMENT ON COLUMN lighthouse_hotel_competitors.compset_id IS 'Compset ID relative to the hotel (-1 = RMS, 1 = App Primary, 2 = App Secondary, ...).';
 
 -- =============================================================================
--- 1. lighthouse_rates_flight_recorder — Lowest Rates API (/v3/rates)
+-- 1. lighthouse_rates_flight_recorder — Rates API (/v3/rates)
 -- One row per snapshot day per subscription per OTA per hotel (client +
--- competitors) per arrival date per LOS.
+-- competitors) per arrival date per LOS per rate_shop (lowest | best_flex).
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS lighthouse_rates_flight_recorder (
@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS lighthouse_rates_flight_recorder (
     is_client BOOLEAN,
     arrival_date DATE NOT NULL,
     los NUMBER NOT NULL,
+    persons NUMBER NOT NULL DEFAULT 2,
+    meal_type NUMBER NOT NULL DEFAULT 0,
+    rate_shop VARCHAR(32) NOT NULL DEFAULT 'lowest',
     extract_datetime TIMESTAMP_NTZ,
     rate_value FLOAT,
     currency VARCHAR(10),
@@ -81,10 +84,13 @@ CREATE TABLE IF NOT EXISTS lighthouse_rates_flight_recorder (
     meal_type_included NUMBER,
     message VARCHAR(128),
     loaded_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    PRIMARY KEY (snapshot_date, subscription_id, ota, hotel_id, arrival_date, los)
+    PRIMARY KEY (snapshot_date, subscription_id, ota, hotel_id, arrival_date, los, persons, meal_type, rate_shop)
 );
 
-COMMENT ON TABLE lighthouse_rates_flight_recorder IS 'Daily snapshots of Lighthouse Lowest Rates API; one layer per snapshot_date for rate-evolution history.';
+COMMENT ON TABLE lighthouse_rates_flight_recorder IS 'Daily snapshots of Lighthouse Rates API (lowest and best_flex shops); one layer per snapshot_date for rate-evolution history.';
+COMMENT ON COLUMN lighthouse_rates_flight_recorder.persons IS 'Shop parameter: minimum guest count requested (Lighthouse persons param).';
+COMMENT ON COLUMN lighthouse_rates_flight_recorder.meal_type IS 'Shop parameter: meal filter (0 = any meal; 1-4 = specific meal plan).';
+COMMENT ON COLUMN lighthouse_rates_flight_recorder.rate_shop IS 'Rate shop: lowest (bar omitted) or best_flex (bar=true).';
 COMMENT ON COLUMN lighthouse_rates_flight_recorder.snapshot_date IS 'Date the flight recorder run captured this rate (local run date).';
 COMMENT ON COLUMN lighthouse_rates_flight_recorder.subscription_id IS 'Lighthouse subscription ID of the client hotel (from Hotels API).';
 COMMENT ON COLUMN lighthouse_rates_flight_recorder.hotel_id IS 'Hotel that published the rate (client hotel or competitor).';
@@ -109,7 +115,10 @@ CREATE TABLE IF NOT EXISTS lighthouse_roomtype_rates_flight_recorder (
     is_client BOOLEAN,
     arrival_date DATE NOT NULL,
     los NUMBER NOT NULL,
+    persons NUMBER NOT NULL DEFAULT 2,
+    meal_type NUMBER NOT NULL DEFAULT 0,
     room_type VARCHAR(64) NOT NULL DEFAULT '',
+    rate_shop VARCHAR(32) NOT NULL DEFAULT 'lowest',
     extract_datetime TIMESTAMP_NTZ,
     rate_value FLOAT,
     currency VARCHAR(10),
@@ -124,10 +133,13 @@ CREATE TABLE IF NOT EXISTS lighthouse_roomtype_rates_flight_recorder (
     meal_type_included NUMBER,
     message VARCHAR(128),
     loaded_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    PRIMARY KEY (snapshot_date, subscription_id, ota, hotel_id, arrival_date, los, room_type)
+    PRIMARY KEY (snapshot_date, subscription_id, ota, hotel_id, arrival_date, los, persons, meal_type, room_type, rate_shop)
 );
 
-COMMENT ON TABLE lighthouse_roomtype_rates_flight_recorder IS 'Daily snapshots of Lighthouse Lowest Rates per Roomtype API; one layer per snapshot_date.';
+COMMENT ON TABLE lighthouse_roomtype_rates_flight_recorder IS 'Daily snapshots of Lighthouse Roomtype Rates API (lowest and best_flex shops); one layer per snapshot_date.';
+COMMENT ON COLUMN lighthouse_roomtype_rates_flight_recorder.persons IS 'Shop parameter: minimum guest count requested (Lighthouse persons param).';
+COMMENT ON COLUMN lighthouse_roomtype_rates_flight_recorder.meal_type IS 'Shop parameter: meal filter (0 = any meal; 1-4 = specific meal plan).';
+COMMENT ON COLUMN lighthouse_roomtype_rates_flight_recorder.rate_shop IS 'Rate shop: lowest (bar omitted) or best_flex (bar=true).';
 COMMENT ON COLUMN lighthouse_roomtype_rates_flight_recorder.room_type IS 'Roomtype of the rate (standard, suite, premium, ...); empty when unavailable.';
 
 -- =============================================================================

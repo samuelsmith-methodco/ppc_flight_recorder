@@ -12,9 +12,11 @@ Also refreshes the lighthouse_hotels / lighthouse_hotel_competitors dimension ta
 
 Snowflake DDL: sql/lighthouse-rates-flight-recorder-tables.sql (auto-applied).
 
-Request budget per run: subscriptions x (len(OTAS) x 2 + 1) + 1 requests.
-Default (9 subs, 3 OTAs): 64 requests — within Lighthouse fair use
-(20 requests/api/subscription per 24h; 120 requests/minute).
+Request budget per run (per subscription, per Lighthouse API endpoint):
+  /v3/rates         — max 20 requests / 24h
+  /v3/roomtyperates — max 20 requests / 24h
+Default shop matrix uses ~28 /v3/rates calls (los/persons/meals extended on
+bookingdotcom; compsets 1+2 fetched in one call). Tune via LIGHTHOUSE_FR_* env vars.
 
 Entry point: sync_lighthouse.py (CLI and server scheduler both call record_snapshot).
 """
@@ -22,6 +24,7 @@ Entry point: sync_lighthouse.py (CLI and server scheduler both call record_snaps
 import os
 import json
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -48,9 +51,33 @@ _project_root = Path(__file__).resolve().parent.parent
 LOOKBACK_DAYS = int(os.getenv("LIGHTHOUSE_FR_LOOKBACK_DAYS", "10"))
 SHOP_LENGTH = int(os.getenv("LIGHTHOUSE_FR_SHOP_LENGTH", "365"))
 OTAS = [s.strip() for s in os.getenv("LIGHTHOUSE_FR_OTAS", "bookingdotcom,expedia,branddotcom").split(",") if s.strip()]
-COMPSET_IDS = [int(s) for s in os.getenv("LIGHTHOUSE_FR_COMPSET_IDS", "1").split(",") if s.strip()]
+COMPSET_IDS = [int(s) for s in os.getenv("LIGHTHOUSE_FR_COMPSET_IDS", "1,2").split(",") if s.strip()]
 REQUEST_DELAY_SECONDS = float(os.getenv("LIGHTHOUSE_FR_REQUEST_DELAY", "0.6"))
 SNOWFLAKE_UPLOAD_BATCH_SIZE = max(1, int(os.getenv("LIGHTHOUSE_FR_SNOWFLAKE_BATCH_SIZE", "500")))
+MAX_RATES_REQUESTS = max(1, int(os.getenv("LIGHTHOUSE_FR_MAX_RATES_REQUESTS", "28")))
+
+
+def _parse_int_list(env_key: str, default: str) -> list[int]:
+    raw = os.getenv(env_key, default)
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            out.append(int(part))
+    return out or [int(x) for x in default.split(",") if x.strip()]
+
+
+def _parse_ota_set(env_key: str, default: str) -> set[str]:
+    raw = os.getenv(env_key, default)
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+LOS_VALUES = _parse_int_list("LIGHTHOUSE_FR_LOS", "1,2,3,4,5")
+LOS_EXTENDED_OTAS = _parse_ota_set("LIGHTHOUSE_FR_LOS_OTAS", "bookingdotcom")
+PERSONS_VALUES = _parse_int_list("LIGHTHOUSE_FR_PERSONS", "1,2,3,4")
+PERSONS_EXTENDED_OTAS = _parse_ota_set("LIGHTHOUSE_FR_PERSONS_OTAS", "bookingdotcom")
+MEAL_TYPES = _parse_int_list("LIGHTHOUSE_FR_MEAL_TYPES", "0,1,2,3,4")
+MEAL_EXTENDED_OTAS = _parse_ota_set("LIGHTHOUSE_FR_MEAL_OTAS", "bookingdotcom")
 
 DDL_PATH = _project_root / "sql" / "lighthouse-rates-flight-recorder-tables.sql"
 
@@ -71,6 +98,12 @@ _RATE_COMMON_COLS = [
     ("message", "string"),
 ]
 
+# Rate shops recorded per OTA: lowest (bar omitted) and best_flex (bar=true).
+RATE_SHOPS: list[tuple[str, bool | None]] = [
+    ("lowest", None),
+    ("best_flex", True),
+]
+
 RATES_TABLE = "lighthouse_rates_flight_recorder"
 RATES_COLS = [
     ("snapshot_date", "string"),
@@ -83,9 +116,12 @@ RATES_COLS = [
     ("is_client", "bool"),
     ("arrival_date", "string"),
     ("los", "int"),
+    ("persons", "int"),
+    ("meal_type", "int"),
+    ("rate_shop", "string"),
     ("room_type", "string"),
 ] + _RATE_COMMON_COLS
-RATES_KEYS = ["snapshot_date", "subscription_id", "ota", "hotel_id", "arrival_date", "los"]
+RATES_KEYS = ["snapshot_date", "subscription_id", "ota", "hotel_id", "arrival_date", "los", "persons", "meal_type", "rate_shop"]
 
 ROOMTYPE_TABLE = "lighthouse_roomtype_rates_flight_recorder"
 ROOMTYPE_COLS = RATES_COLS
@@ -353,7 +389,8 @@ def _rate_common_fields(r):
     }
 
 
-def flatten_rate(r, snapshot_date, subscription_id, client_hotel_id, client_hotel_name, ota):
+def flatten_rate(r, snapshot_date, subscription_id, client_hotel_id, client_hotel_name, ota,
+                 rate_shop="lowest", shop_persons=2, shop_meal_type=0):
     """Flatten one Rate object (from /rates or /roomtyperates) to a table row."""
     hotel_id = r.get("hotelId")
     row = {
@@ -368,10 +405,82 @@ def flatten_rate(r, snapshot_date, subscription_id, client_hotel_id, client_hote
         "is_client": hotel_id == client_hotel_id,
         "arrival_date": r.get("arrivalDate"),
         "los": r.get("los") or 1,
+        "persons": shop_persons,
+        "meal_type": shop_meal_type,
+        "rate_shop": rate_shop,
         "room_type": r.get("roomType") or "",
     }
     row.update(_rate_common_fields(r))
     return row
+
+
+@dataclass(frozen=True)
+class RatesFetchConfig:
+    ota: str
+    rate_shop: str
+    bar: bool | None
+    los: int
+    persons: int
+    meal_type: int
+
+
+def _build_rates_fetch_configs(otas: list[str]) -> tuple[list[RatesFetchConfig], list[RatesFetchConfig]]:
+    """
+    Build /v3/rates fetch configs in priority order, then truncate to MAX_RATES_REQUESTS.
+    Extended shops (LOS>1, persons!=2, meal!=0) apply only on configured OTAs (default:
+    bookingdotcom). Returns (included, skipped).
+    """
+    seen: set[tuple] = set()
+    ordered: list[RatesFetchConfig] = []
+
+    def add(ota: str, rate_shop: str, bar: bool | None, los: int, persons: int, meal_type: int):
+        key = (ota, rate_shop, los, persons, meal_type)
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(RatesFetchConfig(ota, rate_shop, bar, los, persons, meal_type))
+
+    for ota in otas:
+        for rate_shop, bar in RATE_SHOPS:
+            add(ota, rate_shop, bar, 1, 2, 0)
+
+    for ota in otas:
+        if ota not in LOS_EXTENDED_OTAS:
+            continue
+        for rate_shop, bar in RATE_SHOPS:
+            for los in LOS_VALUES:
+                if los == 1:
+                    continue
+                add(ota, rate_shop, bar, los, 2, 0)
+
+    for ota in otas:
+        if ota not in PERSONS_EXTENDED_OTAS:
+            continue
+        for rate_shop, bar in RATE_SHOPS:
+            for persons in PERSONS_VALUES:
+                if persons == 2:
+                    continue
+                add(ota, rate_shop, bar, 1, persons, 0)
+
+    for ota in otas:
+        if ota not in MEAL_EXTENDED_OTAS:
+            continue
+        for rate_shop, bar in RATE_SHOPS:
+            for meal_type in MEAL_TYPES:
+                if meal_type == 0:
+                    continue
+                add(ota, rate_shop, bar, 1, 2, meal_type)
+
+    if len(ordered) <= MAX_RATES_REQUESTS:
+        if len(ordered) > 20:
+            log("recorder", f"Rates fetch plan has {len(ordered)} /v3/rates calls (>20/sub/day Lighthouse limit)")
+        return ordered, []
+
+    included = ordered[:MAX_RATES_REQUESTS]
+    skipped = ordered[MAX_RATES_REQUESTS:]
+    log("recorder", f"Rates fetch plan truncated: {len(included)} included, {len(skipped)} skipped "
+                    f"(LIGHTHOUSE_FR_MAX_RATES_REQUESTS={MAX_RATES_REQUESTS})")
+    return included, skipped
 
 
 def flatten_parity(p, snapshot_date, subscription_id):
@@ -432,6 +541,15 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
         hotels = [h for h in hotels if h.get("subscription_id") in subscription_ids]
         log("recorder", f"Limited to {len(hotels)} subscription(s): {subscription_ids}")
 
+    rates_configs, skipped_configs = _build_rates_fetch_configs(otas)
+    if skipped_configs:
+        for cfg in skipped_configs[:5]:
+            log("recorder", f"  skipped rates shop: {cfg.ota} {cfg.rate_shop} los={cfg.los} "
+                            f"persons={cfg.persons} meal={cfg.meal_type}")
+        if len(skipped_configs) > 5:
+            log("recorder", f"  ... and {len(skipped_configs) - 5} more skipped rates shops")
+    log("recorder", f"Rates shops to fetch: {len(rates_configs)} (roomtyperates: {len(otas) * len(RATE_SHOPS)})")
+
     rates_rows, roomtype_rows, parity_rows = [], [], []
     errors = []
 
@@ -441,26 +559,46 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
         client_name = h.get("name") or ""
         log("recorder", f"--- {client_name} (subscription {sub_id}) ---")
 
-        for ota in otas:
+        for cfg in rates_configs:
             try:
                 time.sleep(REQUEST_DELAY_SECONDS)
-                rates = fetch_rates(sub_id, ota=ota, from_date=from_date, shop_length=shop_length,
-                                    compset_ids=compset_ids)
-                rates_rows.extend(flatten_rate(r, snapshot_date, sub_id, client_id, client_name, ota)
-                                  for r in rates)
+                rates = fetch_rates(
+                    sub_id, ota=cfg.ota, from_date=from_date, shop_length=shop_length,
+                    compset_ids=compset_ids, bar=cfg.bar, los=cfg.los,
+                    persons=cfg.persons, meal_type=cfg.meal_type,
+                )
+                rates_rows.extend(
+                    flatten_rate(
+                        r, snapshot_date, sub_id, client_id, client_name, cfg.ota,
+                        rate_shop=cfg.rate_shop, shop_persons=cfg.persons, shop_meal_type=cfg.meal_type,
+                    )
+                    for r in rates
+                )
             except Exception as e:
-                errors.append(f"rates {sub_id} {ota}: {e}")
-                log("ERROR", f"rates {sub_id} {ota}: {e}")
+                errors.append(
+                    f"rates {sub_id} {cfg.ota} {cfg.rate_shop} los={cfg.los} "
+                    f"p={cfg.persons} meal={cfg.meal_type}: {e}"
+                )
+                log("ERROR", errors[-1])
 
-            try:
-                time.sleep(REQUEST_DELAY_SECONDS)
-                rt_rates = fetch_roomtype_rates(sub_id, ota=ota, from_date=from_date,
-                                                shop_length=shop_length, compset_ids=compset_ids)
-                roomtype_rows.extend(flatten_rate(r, snapshot_date, sub_id, client_id, client_name, ota)
-                                     for r in rt_rates)
-            except Exception as e:
-                errors.append(f"roomtyperates {sub_id} {ota}: {e}")
-                log("ERROR", f"roomtyperates {sub_id} {ota}: {e}")
+        for ota in otas:
+            for rate_shop, bar in RATE_SHOPS:
+                try:
+                    time.sleep(REQUEST_DELAY_SECONDS)
+                    rt_rates = fetch_roomtype_rates(
+                        sub_id, ota=ota, from_date=from_date, shop_length=shop_length,
+                        compset_ids=compset_ids, bar=bar, los=1, persons=2, meal_type=0,
+                    )
+                    roomtype_rows.extend(
+                        flatten_rate(
+                            r, snapshot_date, sub_id, client_id, client_name, ota,
+                            rate_shop=rate_shop, shop_persons=2, shop_meal_type=0,
+                        )
+                        for r in rt_rates
+                    )
+                except Exception as e:
+                    errors.append(f"roomtyperates {sub_id} {ota} {rate_shop}: {e}")
+                    log("ERROR", f"roomtyperates {sub_id} {ota} {rate_shop}: {e}")
 
         # Parity: one call per subscription (covers all OTAs); past fromDate not allowed.
         try:
