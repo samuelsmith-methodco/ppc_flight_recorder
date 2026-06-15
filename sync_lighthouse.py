@@ -9,6 +9,7 @@ dimension tables.
 
   cd ppc_flight_recorder
   python sync_lighthouse.py                          # full daily snapshot (env defaults)
+  python sync_lighthouse.py --snapshot-date 2026-06-10
   python sync_lighthouse.py --lookback-days 364 --shop-length 365   # ~365 days through today
   python sync_lighthouse.py --hotels-only            # refresh hotel dimension tables only
   python sync_lighthouse.py --subscription-ids 164110
@@ -26,6 +27,15 @@ from config import LIGHTHOUSE_RATE_API_TOKEN
 logger = logging.getLogger(__name__)
 
 
+def _parse_snapshot_date(value: Optional[str]) -> date:
+    if value is None:
+        return date.today()
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid snapshot date '{value}'. Use YYYY-MM-DD.") from exc
+
+
 def run_sync(
     subscription_ids: Optional[list[int]] = None,
     hotels_only: bool = False,
@@ -34,18 +44,26 @@ def run_sync(
     shop_length: Optional[int] = None,
     otas: Optional[list[str]] = None,
     compset_ids: Optional[list[int]] = None,
+    snapshot_date: Optional[str] = None,
 ) -> dict:
     """
     Run one Lighthouse flight recorder snapshot. Returns a result dict for
     the server's last-sync status (status: ok | error).
 
     lookback_days / shop_length / otas / compset_ids override env defaults when set.
+    snapshot_date overrides the Snowflake layer date (default: today); fromDate is
+    anchored to snapshot_date minus lookback_days.
     """
-    snapshot_date = date.today().isoformat()
+    try:
+        snap = _parse_snapshot_date(snapshot_date)
+    except ValueError as exc:
+        return {"status": "error", "snapshot_date": snapshot_date or "", "error": str(exc)}
+
+    snapshot_date_iso = snap.isoformat()
     if not LIGHTHOUSE_RATE_API_TOKEN:
         return {
             "status": "error",
-            "snapshot_date": snapshot_date,
+            "snapshot_date": snapshot_date_iso,
             "error": "LIGHTHOUSE_RATE_API_TOKEN not configured (set it in .env)",
         }
     try:
@@ -59,10 +77,11 @@ def run_sync(
             shop_length=shop_length,
             otas=otas,
             compset_ids=compset_ids,
+            snapshot_date=snapshot_date_iso,
         )
         result = {
             "status": "ok" if ok else "error",
-            "snapshot_date": snapshot_date,
+            "snapshot_date": snapshot_date_iso,
             "hotels_only": hotels_only,
             "subscription_ids": subscription_ids,
             "lookback_days": lookback_days,
@@ -75,7 +94,7 @@ def run_sync(
         return result
     except Exception as exc:
         logger.exception("Lighthouse sync failed: %s", exc)
-        return {"status": "error", "snapshot_date": snapshot_date, "error": str(exc)}
+        return {"status": "error", "snapshot_date": snapshot_date_iso, "error": str(exc)}
 
 
 def main() -> int:
@@ -90,11 +109,18 @@ def main() -> int:
     parser.add_argument("--hotels-only", action="store_true", help="Refresh hotel dimension tables only")
     parser.add_argument("--skip-upload", action="store_true", help="Dry run: fetch only, skip Snowflake upload")
     parser.add_argument(
+        "--snapshot-date",
+        type=str,
+        default=None,
+        help="Snowflake snapshot layer date YYYY-MM-DD (default: today). "
+        "Deletes and re-inserts rows for this snapshot_date.",
+    )
+    parser.add_argument(
         "--lookback-days",
         type=int,
         default=None,
-        help="Days before today for rates fromDate (overrides LIGHTHOUSE_FR_LOOKBACK_DAYS). "
-        "Use 364 with --shop-length 365 for ~365 arrival days through today.",
+        help="Days before snapshot_date for rates fromDate (overrides LIGHTHOUSE_FR_LOOKBACK_DAYS). "
+        "Use 364 with --shop-length 365 for ~365 arrival days through snapshot_date.",
     )
     parser.add_argument(
         "--shop-length",
@@ -124,6 +150,7 @@ def main() -> int:
         shop_length=args.shop_length,
         otas=args.otas,
         compset_ids=args.compset_ids,
+        snapshot_date=args.snapshot_date,
     )
     if result.get("status") != "ok":
         logger.error("Sync failed: %s", result.get("error"))

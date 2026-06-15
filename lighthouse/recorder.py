@@ -535,19 +535,28 @@ def flatten_parity(p, snapshot_date, subscription_id):
 # ---------------------------------------------------------------------------
 
 def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None, otas=None,
-                    compset_ids=None, skip_upload=False, hotels_only=False):
+                    compset_ids=None, skip_upload=False, hotels_only=False, snapshot_date=None):
     """
     Run one flight recorder snapshot: fetch hotels + rates/roomtyperates/parities for
-    every subscription and MERGE directly into Snowflake.
+    every subscription and write to Snowflake.
     With hotels_only=True, only the hotels dimension tables are refreshed.
+
+    snapshot_date: YYYY-MM-DD layer key (default: today). fromDate = snapshot_date - lookback_days.
     """
     lookback_days = LOOKBACK_DAYS if lookback_days is None else lookback_days
     shop_length = SHOP_LENGTH if shop_length is None else shop_length
     otas = otas or OTAS
     compset_ids = compset_ids or COMPSET_IDS
 
-    snapshot_date = date.today().isoformat()
-    from_date = (date.today() - timedelta(days=lookback_days)).isoformat()
+    if snapshot_date is None:
+        snap = date.today()
+    elif isinstance(snapshot_date, date):
+        snap = snapshot_date
+    else:
+        snap = date.fromisoformat(str(snapshot_date).strip())
+
+    snapshot_date = snap.isoformat()
+    from_date = (snap - timedelta(days=lookback_days)).isoformat()
 
     log("recorder", f"Snapshot {snapshot_date}: fromDate={from_date} shopLength={shop_length} "
                     f"otas={otas} compsets={compset_ids}")

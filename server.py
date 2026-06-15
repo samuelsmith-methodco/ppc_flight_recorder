@@ -392,6 +392,7 @@ def trigger_ideas_sync(body: Optional[IdeasSyncRequest] = Body(None)):
 class LighthouseSyncRequest(BaseModel):
     hotels_only: Optional[bool] = False  # If true, refresh only lighthouse_hotels / lighthouse_hotel_competitors
     subscription_ids: Optional[list[int]] = None  # Limit to specific Lighthouse subscription IDs
+    snapshot_date: Optional[str] = None  # YYYY-MM-DD Snowflake layer (default: today)
     lookback_days: Optional[int] = None  # Override LIGHTHOUSE_FR_LOOKBACK_DAYS
     shop_length: Optional[int] = None  # Override LIGHTHOUSE_FR_SHOP_LENGTH (API max 365)
     otas: Optional[list[str]] = None
@@ -401,8 +402,8 @@ class LighthouseSyncRequest(BaseModel):
 @app.post("/sync/lighthouse")
 def trigger_lighthouse_sync(body: Optional[LighthouseSyncRequest] = Body(None)):
     """
-    Run Lighthouse rates flight recorder snapshot (API -> Snowflake) for today.
-    Optional body: {"lookback_days": 364, "shop_length": 365} or {"hotels_only": true}.
+    Run Lighthouse rates flight recorder snapshot (API -> Snowflake).
+    Optional body: {"snapshot_date": "2026-06-10", "lookback_days": 364, "shop_length": 365}.
     """
     from sync_lighthouse import run_sync
 
@@ -415,6 +416,7 @@ def trigger_lighthouse_sync(body: Optional[LighthouseSyncRequest] = Body(None)):
             shop_length=body.shop_length if body else None,
             otas=body.otas if body else None,
             compset_ids=body.compset_ids if body else None,
+            snapshot_date=body.snapshot_date if body else None,
         )
         _last_lighthouse_sync_result = result
         if result.get("status") == "error":
