@@ -48,7 +48,7 @@ from lighthouse.client import fetch_hotels, fetch_parities, fetch_rates, fetch_r
 _project_root = Path(__file__).resolve().parent.parent
 
 # Flight recorder config (env overridable; .env loaded by config import)
-LOOKBACK_DAYS = int(os.getenv("LIGHTHOUSE_FR_LOOKBACK_DAYS", "10"))
+LOOKBACK_DAYS = int(os.getenv("LIGHTHOUSE_FR_LOOKBACK_DAYS", "0"))
 SHOP_LENGTH = int(os.getenv("LIGHTHOUSE_FR_SHOP_LENGTH", "365"))
 OTAS = [s.strip() for s in os.getenv("LIGHTHOUSE_FR_OTAS", "bookingdotcom,expedia,branddotcom").split(",") if s.strip()]
 COMPSET_IDS = [int(s) for s in os.getenv("LIGHTHOUSE_FR_COMPSET_IDS", "1,2").split(",") if s.strip()]
