@@ -182,3 +182,28 @@ COMMENT ON TABLE lighthouse_parity_flight_recorder IS 'Daily snapshots of Lighth
 COMMENT ON COLUMN lighthouse_parity_flight_recorder.is_baserate IS 'TRUE when this rate is the reference (baserate, typically branddotcom) within the parity.';
 COMMENT ON COLUMN lighthouse_parity_flight_recorder.position_to_baserate IS '-2..2: how the rate compares to the baserate (see Lighthouse Parity API docs).';
 COMMENT ON COLUMN lighthouse_parity_flight_recorder.channel IS 'Publishing channel; equals ota unless the ota is a metasearch site.';
+
+-- =============================================================================
+-- 4. lighthouse_demand_snapshot — Demand API (/v3/demand)
+-- One row per snapshot day per subscription per arrival date. Market-demand
+-- predictions for R-Model MDI (z_LH). Leonardo joins hotel_id to
+-- lighthouse_property.lighthouse_id for property_id.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS lighthouse_demand_snapshot (
+    snapshot_date DATE NOT NULL,
+    subscription_id NUMBER NOT NULL,
+    hotel_id NUMBER,
+    hotel_name VARCHAR(255),
+    arrival_date DATE NOT NULL,
+    demand_value FLOAT,
+    market_otb_index FLOAT,
+    extract_datetime TIMESTAMP_NTZ,
+    raw_json VARCHAR(4000),
+    loaded_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (snapshot_date, subscription_id, arrival_date)
+);
+
+COMMENT ON TABLE lighthouse_demand_snapshot IS 'Daily Lighthouse GET /v3/demand predictions per arrival date. Owned by ppc_flight_recorder (9:30 AM); missing-safe for R-Model MDI.';
+COMMENT ON COLUMN lighthouse_demand_snapshot.demand_value IS 'Primary demand score from the API (field demand / value / market_demand).';
+COMMENT ON COLUMN lighthouse_demand_snapshot.hotel_id IS 'Lighthouse hotel id; join to Leonardo lighthouse_property.lighthouse_id.';

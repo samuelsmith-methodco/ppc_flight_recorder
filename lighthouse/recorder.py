@@ -5,6 +5,7 @@ Each run captures, for every subscription (hotel) on the account:
   - Lowest Rates (/v3/rates)                       per OTA, from <lookback> days ago up to 365 days out
   - Lowest Rates per Roomtype (/v3/roomtyperates)  per OTA, same window
   - Parity rates (/v3/parities)                    from today (API does not allow past fromDate)
+  - Market demand (/v3/demand)                     arrival-date predictions (R-Model MDI z_LH)
 
 Results are written to Snowflake snapshot tables keyed by snapshot_date:
 each run DELETEs existing rows for that snapshot_date, then INSERTs fresh data.
@@ -43,7 +44,7 @@ from config import (
     SNOWFLAKE_USER,
     SNOWFLAKE_WAREHOUSE,
 )
-from lighthouse.client import fetch_hotels, fetch_parities, fetch_rates, fetch_roomtype_rates, log
+from lighthouse.client import fetch_demand, fetch_hotels, fetch_parities, fetch_rates, fetch_roomtype_rates, log
 
 _project_root = Path(__file__).resolve().parent.parent
 
@@ -55,6 +56,8 @@ COMPSET_IDS = [int(s) for s in os.getenv("LIGHTHOUSE_FR_COMPSET_IDS", "1,2").spl
 REQUEST_DELAY_SECONDS = float(os.getenv("LIGHTHOUSE_FR_REQUEST_DELAY", "0.6"))
 SNOWFLAKE_UPLOAD_BATCH_SIZE = max(1, int(os.getenv("LIGHTHOUSE_FR_SNOWFLAKE_BATCH_SIZE", "500")))
 MAX_RATES_REQUESTS = max(1, int(os.getenv("LIGHTHOUSE_FR_MAX_RATES_REQUESTS", "28")))
+DEMAND_ARRIVAL_DATES = max(1, min(352, int(os.getenv("LIGHTHOUSE_DEMAND_ARRIVAL_DATES", "120"))))
+UPDATE_DEMAND = os.getenv("LIGHTHOUSE_UPDATE_DEMAND", "1").strip().lower() not in ("0", "false", "no")
 
 
 def _parse_int_list(env_key: str, default: str) -> list[int]:
@@ -143,6 +146,20 @@ PARITY_COLS = [
     ("room_type", "string"),
 ] + _RATE_COMMON_COLS
 PARITY_KEYS = ["snapshot_date", "subscription_id", "hotel_id", "arrival_date", "los", "ota", "channel"]
+
+DEMAND_TABLE = "lighthouse_demand_snapshot"
+DEMAND_COLS = [
+    ("snapshot_date", "string"),
+    ("subscription_id", "int"),
+    ("hotel_id", "int"),
+    ("hotel_name", "string"),
+    ("arrival_date", "string"),
+    ("demand_value", "number"),
+    ("market_otb_index", "number"),
+    ("extract_datetime", "string"),
+    ("raw_json", "string"),
+]
+DEMAND_KEYS = ["snapshot_date", "subscription_id", "arrival_date"]
 
 HOTELS_TABLE = "lighthouse_hotels"
 HOTELS_COLS = [
@@ -530,6 +547,47 @@ def flatten_parity(p, snapshot_date, subscription_id):
     return rows
 
 
+def _first_number(record, keys):
+    for key in keys:
+        val = record.get(key)
+        if val is None or val == "":
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def flatten_demand(record, snapshot_date, subscription_id, hotel_id, hotel_name):
+    """Flatten one GET /v3/demand object to a lighthouse_demand_snapshot row."""
+    arrival = record.get("arrival_date") or record.get("arrivalDate") or record.get("date")
+    if arrival is None:
+        return None
+    arrival_s = str(arrival).strip()[:10]
+    if len(arrival_s) < 10:
+        return None
+    try:
+        date.fromisoformat(arrival_s)
+    except ValueError:
+        return None
+    extract = record.get("extract_datetime") or record.get("extractDateTime")
+    name = (hotel_name or "")[:255]
+    return {
+        "snapshot_date": snapshot_date,
+        "subscription_id": subscription_id,
+        "hotel_id": hotel_id,
+        "hotel_name": name,
+        "arrival_date": arrival_s,
+        "demand_value": _first_number(record, ("demand", "value", "market_demand", "demand_index")),
+        "market_otb_index": _first_number(
+            record, ("market_otb_index", "marketOtbIndex", "otb_index", "otbIndex")
+        ),
+        "extract_datetime": str(extract) if extract else None,
+        "raw_json": json.dumps(record, separators=(",", ":"), default=str)[:4000],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Recorder run
 # ---------------------------------------------------------------------------
@@ -583,7 +641,7 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
             log("recorder", f"  ... and {len(skipped_configs) - 5} more skipped rates shops")
     log("recorder", f"Rates shops to fetch: {len(rates_configs)} (roomtyperates: {len(otas) * len(RATE_SHOPS)})")
 
-    rates_rows, roomtype_rows, parity_rows = [], [], []
+    rates_rows, roomtype_rows, parity_rows, demand_rows = [], [], [], []
     errors = []
 
     for h in hotels:
@@ -643,8 +701,22 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
             errors.append(f"parities {sub_id}: {e}")
             log("ERROR", f"parities {sub_id}: {e}")
 
+        if UPDATE_DEMAND:
+            try:
+                time.sleep(REQUEST_DELAY_SECONDS)
+                demands = fetch_demand(sub_id, number_of_arrival_dates=DEMAND_ARRIVAL_DATES)
+                for rec in demands:
+                    if not isinstance(rec, dict):
+                        continue
+                    row = flatten_demand(rec, snapshot_date, sub_id, client_id, client_name)
+                    if row:
+                        demand_rows.append(row)
+            except Exception as e:
+                errors.append(f"demand {sub_id}: {e}")
+                log("ERROR", f"demand {sub_id}: {e}")
+
     log("recorder", f"Collected rows: rates={len(rates_rows)} roomtyperates={len(roomtype_rows)} "
-                    f"parities={len(parity_rows)} (errors: {len(errors)})")
+                    f"parities={len(parity_rows)} demand={len(demand_rows)} (errors: {len(errors)})")
 
     if skip_upload:
         log("recorder", "Skipping Snowflake upload (--skip-upload)")
@@ -653,6 +725,7 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
     ok = upload_to_snowflake(
         rates_rows, roomtype_rows, parity_rows, hotel_rows, competitor_rows,
         snapshot_date=snapshot_date,
+        demand_rows=demand_rows,
     )
     return ok and len(errors) == 0
 
@@ -665,6 +738,7 @@ def upload_to_snowflake(
     competitor_rows=None,
     snapshot_date=None,
     write_snapshots=True,
+    demand_rows=None,
 ):
     """Create tables if needed, refresh hotel dimension tables and replace snapshot rows."""
     if not validate_snowflake_config():
@@ -700,6 +774,10 @@ def upload_to_snowflake(
             replace_snapshot_rows(cursor, db_schema, RATES_TABLE, RATES_COLS, RATES_KEYS, rates_rows, snapshot_date)
             replace_snapshot_rows(cursor, db_schema, ROOMTYPE_TABLE, ROOMTYPE_COLS, ROOMTYPE_KEYS, roomtype_rows, snapshot_date)
             replace_snapshot_rows(cursor, db_schema, PARITY_TABLE, PARITY_COLS, PARITY_KEYS, parity_rows, snapshot_date)
+            if UPDATE_DEMAND:
+                replace_snapshot_rows(
+                    cursor, db_schema, DEMAND_TABLE, DEMAND_COLS, DEMAND_KEYS, demand_rows or [], snapshot_date
+                )
         conn.commit()
         log("SNOWFLAKE", "Upload complete")
         return True

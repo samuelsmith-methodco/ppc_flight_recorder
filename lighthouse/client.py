@@ -6,6 +6,7 @@ Endpoints used by the flight recorder:
   Lowest Rates API            GET /v3/rates
   Lowest Rates per Roomtype   GET /v3/roomtyperates
   Parity API                  GET /v3/parities
+  Demand API                  GET /v3/demand
 
 Rate limits (Lighthouse fair-usage policy):
   - max 20 requests per API per subscription over a 24-hour period
@@ -149,3 +150,16 @@ def fetch_parities(subscription_id, los=None, bar=None, persons=None, meal_type=
     parities = data.get("parities", [])
     log("parities", f"Got {len(parities)} parity records")
     return parities
+
+
+def fetch_demand(subscription_id, number_of_arrival_dates=None):
+    """
+    Fetch market demand predictions per arrival date from GET /v3/demand.
+    number_of_arrival_dates: max 352 with Market Insight, 61 without.
+    """
+    params = _params(subscriptionId=subscription_id, numberOfArrivalDates=number_of_arrival_dates)
+    log("demand", f"Fetching demand for subscription {subscription_id}")
+    data = _request("demand", params=params)
+    demands = data.get("demands", [])
+    log("demand", f"Got {len(demands)} demand records")
+    return demands

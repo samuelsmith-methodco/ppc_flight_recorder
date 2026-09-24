@@ -72,15 +72,15 @@ Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, 
 
 ### Lighthouse rates (Lighthouse API v3 flight recorder)
 
-1. Self-contained in this project: API client and recorder live under `lighthouse/` (`client.py`, `recorder.py`). Set `LIGHTHOUSE_RATE_API_TOKEN` in `.env` (optional tuning: `LIGHTHOUSE_FR_LOOKBACK_DAYS`, `LIGHTHOUSE_FR_SHOP_LENGTH`, `LIGHTHOUSE_FR_OTAS`, `LIGHTHOUSE_FR_COMPSET_IDS`, see `env.example.txt`).
-2. DDL (auto-applied on first run): `sql/lighthouse-rates-flight-recorder-tables.sql` — `lighthouse_hotels`, `lighthouse_hotel_competitors`, `lighthouse_rates_flight_recorder`, `lighthouse_roomtype_rates_flight_recorder`, `lighthouse_parity_flight_recorder`.
-3. Sync (records today's snapshot layer; MERGE keyed on `snapshot_date`, re-runs are idempotent):
+1. Self-contained in this project: API client and recorder live under `lighthouse/` (`client.py`, `recorder.py`). Set `LIGHTHOUSE_RATE_API_TOKEN` in `.env` (optional tuning: `LIGHTHOUSE_FR_LOOKBACK_DAYS`, `LIGHTHOUSE_FR_SHOP_LENGTH`, `LIGHTHOUSE_FR_OTAS`, `LIGHTHOUSE_FR_COMPSET_IDS`, `LIGHTHOUSE_UPDATE_DEMAND`, `LIGHTHOUSE_DEMAND_ARRIVAL_DATES`, see `env.example.txt`).
+2. DDL (auto-applied on first run): `sql/lighthouse-rates-flight-recorder-tables.sql` — `lighthouse_hotels`, `lighthouse_hotel_competitors`, `lighthouse_rates_flight_recorder`, `lighthouse_roomtype_rates_flight_recorder`, `lighthouse_parity_flight_recorder`, `lighthouse_demand_snapshot`.
+3. Sync (records today's snapshot layer; DELETE+INSERT keyed on `snapshot_date`, re-runs are idempotent):
    ```bash
    python sync_lighthouse.py                          # full snapshot, all subscriptions
    python sync_lighthouse.py --hotels-only            # refresh hotel dimension tables only
    python sync_lighthouse.py --subscription-ids 164110
    ```
-4. **Scheduler** (when running `uvicorn server:app`): Lighthouse runs at **9:30 AM** by default (`LIGHTHOUSE_SYNC_SCHEDULE_HOUR=9`, `LIGHTHOUSE_SYNC_SCHEDULE_MINUTE=30`), recording **today's** rates/roomtyperates/parity snapshot. Disable with `RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE=0`.
+4. **Scheduler** (when running `uvicorn server:app`): Lighthouse runs at **9:30 AM** by default (`LIGHTHOUSE_SYNC_SCHEDULE_HOUR=9`, `LIGHTHOUSE_SYNC_SCHEDULE_MINUTE=30`), recording **today's** rates/roomtyperates/parity/demand snapshot. Disable with `RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE=0`. Skip demand only with `LIGHTHOUSE_UPDATE_DEMAND=0`.
 5. Manual API: `POST /sync/lighthouse` (optional body `{"hotels_only": true}` or `{"subscription_ids": [164110]}`).
 
 ### PMS Mews (Connector API)
