@@ -1654,20 +1654,27 @@ def main() -> None:
     else:
         snapshot_date = date.today() - timedelta(days=1)
 
-    run_sync(
-        snapshot_date=snapshot_date,
-        projects=projects,
-        run_ga4=args.ga4,
-        control_state_only=args.control_state_only,
-        control_state_keyword_only=args.control_state_keyword_only,
-        control_state_adgroup_only=args.control_state_adgroup_only,
-        control_state_adcreative_only=args.control_state_adcreative_only,
-        control_state_audience_only=args.control_state_audience_only,
-        control_state_campaign_only=args.control_state_campaign_only,
-        control_state_device_only=args.control_state_device_only,
-        control_state_changes_only=args.control_state_changes_only,
-        control_state_conversions_only=args.control_state_conversions_only,
-    )
+    from update_status import JOB_PPC, record_update_run
+
+    try:
+        run_sync(
+            snapshot_date=snapshot_date,
+            projects=projects,
+            run_ga4=args.ga4,
+            control_state_only=args.control_state_only,
+            control_state_keyword_only=args.control_state_keyword_only,
+            control_state_adgroup_only=args.control_state_adgroup_only,
+            control_state_adcreative_only=args.control_state_adcreative_only,
+            control_state_audience_only=args.control_state_audience_only,
+            control_state_campaign_only=args.control_state_campaign_only,
+            control_state_device_only=args.control_state_device_only,
+            control_state_changes_only=args.control_state_changes_only,
+            control_state_conversions_only=args.control_state_conversions_only,
+        )
+    except Exception as exc:
+        record_update_run(JOB_PPC, success=False, error_message=str(exc))
+        raise
+    record_update_run(JOB_PPC, success=True)
     logger.info("PPC Flight Recorder sync completed for %s", snapshot_date.isoformat())
 
 

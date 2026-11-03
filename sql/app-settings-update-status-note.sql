@@ -1,0 +1,12 @@
+-- Flight Recorder daily-update status uses Leonardo's existing app_settings table
+-- (LEONARDO_DB.PUBLIC.app_settings — created by Leonardo settings-tables.sql).
+-- No CREATE needed here.
+--
+-- Keys written by update_status.py after each sync:
+--   daily_update_last_run:ppc_fr_resy
+--   daily_update_last_run:ppc_fr_ideas
+--   daily_update_last_run:ppc_fr_lighthouse
+--   daily_update_last_run:ppc_fr_ppc
+--
+-- JSON value shape (same as Leonardo Update Health):
+--   {"last_success_at":"...","last_attempt_at":"...","status":"success"|"failed","error":null|"..."}

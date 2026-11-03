@@ -135,6 +135,8 @@ def main() -> int:
     elif from_date:
         logger.info("From delivery date: %s (inclusive)", from_date)
 
+    from update_status import JOB_IDEAS, record_update_run
+
     result = run_sync(
         delivery_dates=delivery_dates,
         from_date=from_date,
@@ -145,8 +147,14 @@ def main() -> int:
 
     if result.get("status") == "error":
         logger.error("Sync aborted: %s", result.get("error"))
+        record_update_run(
+            JOB_IDEAS,
+            success=False,
+            error_message=str(result.get("error") or "IDeaS sync failed"),
+        )
         return 1
 
+    record_update_run(JOB_IDEAS, success=True)
     logger.info(
         "Done. processed=%s skipped=%s",
         result["archives_processed"],

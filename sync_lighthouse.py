@@ -142,6 +142,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from update_status import JOB_LIGHTHOUSE, record_update_run
+
     result = run_sync(
         subscription_ids=args.subscription_ids,
         hotels_only=args.hotels_only,
@@ -154,7 +156,15 @@ def main() -> int:
     )
     if result.get("status") != "ok":
         logger.error("Sync failed: %s", result.get("error"))
+        if not args.skip_upload:
+            record_update_run(
+                JOB_LIGHTHOUSE,
+                success=False,
+                error_message=str(result.get("error") or "Lighthouse sync failed"),
+            )
         return 1
+    if not args.skip_upload:
+        record_update_run(JOB_LIGHTHOUSE, success=True)
     logger.info("Done: %s", result)
     return 0
 

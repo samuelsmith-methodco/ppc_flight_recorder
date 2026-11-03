@@ -83,6 +83,20 @@ Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, 
 4. **Scheduler** (when running `uvicorn server:app`): Lighthouse runs at **9:30 AM** by default (`LIGHTHOUSE_SYNC_SCHEDULE_HOUR=9`, `LIGHTHOUSE_SYNC_SCHEDULE_MINUTE=30`), recording **today's** rates/roomtyperates/parity/demand snapshot. Disable with `RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE=0`. Skip demand only with `LIGHTHOUSE_UPDATE_DEMAND=0`.
 5. Manual API: `POST /sync/lighthouse` (optional body `{"hotels_only": true}` or `{"subscription_ids": [164110]}`).
 
+### Resy Pace (analytics reports + Toast turns)
+
+1. Self-contained under `resy/` (`client.py`, `normalize.py`, `recorder.py`, `toast_client.py`). Set `RESY_EMAIL` and `RESY_PASSWORD` (same Resy OS login as Leonardo). Optional Toast: `TOAST_STANDARD_CLIENT_ID` / `TOAST_STANDARD_CLIENT_SECRET`.
+2. DDL (auto-applied on first run): `sql/resy-pace-flight-recorder-tables.sql` — `resy_venue`, `resy_reservation_snapshot`, `resy_reservation_ledger`, `resy_reservation_status_event`, `resy_guest`, `resy_daily_covers_actual`, `resy_toast_daily`.
+3. Sync MERGEs on natural keys (re-runs are idempotent; a zero will not overwrite a stored nonzero unless `--force-zero`):
+   ```bash
+   python sync_resy.py --dry-run
+   python sync_resy.py --venue-id 1 --horizon 7 --toast-days 1
+   python sync_resy.py
+   ```
+   If the analytics token cannot call the Reservations report, the sync logs in with Playwright Chromium (`pip install playwright` then `python -m playwright install chromium`).
+4. **Scheduler** (when running `uvicorn server:app`): Resy runs at **6:00 AM** by default (`RESY_SYNC_SCHEDULE_HOUR=6`, `RESY_SYNC_SCHEDULE_MINUTE=0`). Disable with `RUN_RESY_SYNC_ON_SCHEDULE=0`.
+5. Manual API: `POST /sync/resy` (optional body `{"venue_ids": [1], "horizon": 7, "dry_run": true}`).
+
 ### PMS Mews (Connector API)
 
 1. Run DDL: `sql/pms-mews-flight-recorder-tables.sql` (all tables `pms_mews_*_daily` and `pms_mews_*_diff_daily`; lowercase quoted column names; `record_json` VARIANT on snapshots).
@@ -234,11 +248,27 @@ ppc_flight_recorder/
   README.md
 ```
 
+## Update Health status (Leonardo Settings)
+
+After each Resy / IDeaS / Lighthouse / PPC sync (scheduler, `POST /sync*`, or CLI), `update_status.py` MERGEs last-run JSON into the shared Snowflake `app_settings` table (same DB as Leonardo: `LEONARDO_DB.PUBLIC`). Keys:
+
+| Job | Schedule (default EST) | `app_settings` key |
+|-----|------------------------|--------------------|
+| Resy Pace | 06:00 | `daily_update_last_run:ppc_fr_resy` |
+| IDeaS G3 | 09:00 | `daily_update_last_run:ppc_fr_ideas` |
+| Lighthouse API | 09:30 | `daily_update_last_run:ppc_fr_lighthouse` |
+| PPC Google Ads | 21:30 | `daily_update_last_run:ppc_fr_ppc` |
+
+Leonardo Settings → **Update Health** lists these rows (status / last success only — no force-run or run log from Leonardo). Mews PMS post-sync is currently disabled and is not tracked.
+
+See `sql/app-settings-update-status-note.sql`.
+
 ## Separation from Leonardo
 
 - **No imports from Leonardo** – all code and config live in `ppc_flight_recorder/`.
 - **Own .env** – Snowflake, Google Ads, and GA4 URL are configured here only.
 - **Run independently** – use this folder’s venv and `python sync.py`; no need to start the Leonardo backend.
+- **Shared Snowflake status** – sync outcomes write to Leonardo’s `app_settings` so Update Health can display them.
 
 The Leonardo repo can still contain the older backend integration (e.g. `backend/scripts/ppc_flight_recorder_sync.py`); this standalone project is the one intended to be run separately.
 FYI:https://developers.google.com/google-ads/api/fields/v20/campaign#campaign.end_date_time

@@ -16,3 +16,6 @@ uvicorn[standard]>=0.22.0
 apscheduler>=3.10.0
 paramiko>=3.4.0
 PySocks>=1.7.1
+# Optional: Resy OS browser fallback when the analytics token cannot call reports.
+# playwright>=1.40.0
+# then: python -m playwright install chromium

@@ -5,6 +5,7 @@ Runs Uvicorn on port 9001. Schedulers:
   - PPC (+ optional Mews): default 9:30 PM — syncs yesterday only
   - IDeaS G3: default 9:00 AM — syncs yesterday + today delivery dates
   - Lighthouse rates: default 9:30 AM — records today's rates/parity snapshot
+  - Resy Pace: default 6:00 AM — reservations, covers, and Toast turns
 
   cd ppc_flight_recorder
   pip install -r requirements.txt
@@ -31,6 +32,12 @@ from config import (
     LIGHTHOUSE_SYNC_SCHEDULE_MINUTE,
     LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
     RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE,
+    RESY_EMAIL,
+    RESY_PASSWORD,
+    RESY_SYNC_SCHEDULE_HOUR,
+    RESY_SYNC_SCHEDULE_MINUTE,
+    RESY_SYNC_SCHEDULE_TIMEZONE,
+    RUN_RESY_SYNC_ON_SCHEDULE,
     MEWS_ACCESS_TOKEN,
     MEWS_CLIENT_TOKEN,
     MEWS_SYNC_DO_DIFF_ON_SCHEDULE,
@@ -51,6 +58,7 @@ _scheduler = None
 _last_sync_result: Optional[dict] = None
 _last_ideas_sync_result: Optional[dict] = None
 _last_lighthouse_sync_result: Optional[dict] = None
+_last_resy_sync_result: Optional[dict] = None
 
 
 def _run_mews_after_ppc(snapshot_date: date, *, partial_ppc_sync: bool = False) -> None:
@@ -97,6 +105,7 @@ def _run_daily_sync() -> None:
     """Run daily sync for yesterday, all projects; GA4 + diffs only if SAVE_GA4_ON_DAILY_SYNC is set. Called by scheduler."""
     global _last_sync_result
     from sync import run_sync
+    from update_status import JOB_PPC, record_update_run
 
     today = date.today()
     # Sync: yesterday only
@@ -113,10 +122,11 @@ def _run_daily_sync() -> None:
             )
             completed.append(snapshot_date.isoformat())
             logger.info("Scheduled daily sync completed for %s", snapshot_date.isoformat())
-            _run_mews_after_ppc(snapshot_date, partial_ppc_sync=False)
+            record_update_run(JOB_PPC, success=True)
         except Exception as e:
             last_error = str(e)
             logger.exception("Scheduled daily sync failed for %s: %s", snapshot_date.isoformat(), e)
+            record_update_run(JOB_PPC, success=False, error_message=last_error)
             _last_sync_result = {
                 "status": "error",
                 "snapshot_date": snapshot_date.isoformat(),
@@ -124,6 +134,15 @@ def _run_daily_sync() -> None:
                 "error": last_error,
             }
             raise
+        # Mews is separate from PPC status (currently disabled via RUN_MEWS_SYNC_AFTER_DAILY_SYNC).
+        try:
+            _run_mews_after_ppc(snapshot_date, partial_ppc_sync=False)
+        except Exception as mews_exc:
+            logger.exception(
+                "Mews post-sync failed for %s (PPC status already recorded): %s",
+                snapshot_date.isoformat(),
+                mews_exc,
+            )
     _last_sync_result = {
         "status": "ok",
         "snapshot_dates": completed,
@@ -136,10 +155,12 @@ def _run_ideas_daily_sync() -> None:
     """Run IDeaS sync for yesterday and today delivery dates (delete + insert per archive)."""
     global _last_ideas_sync_result
     from ideas_storage import default_delivery_dates, run_sync
+    from update_status import JOB_IDEAS, record_update_run
 
     if not IDEAS_SFTP_USERNAME or not IDEAS_SFTP_PASSWORD:
         logger.info("Skipping IDeaS scheduled sync (IDEAS_SFTP_USERNAME / IDEAS_SFTP_PASSWORD not set)")
         _last_ideas_sync_result = {"status": "skipped", "reason": "missing SFTP credentials"}
+        record_update_run(JOB_IDEAS, success=True)
         return
 
     delivery_dates = default_delivery_dates()
@@ -148,8 +169,11 @@ def _run_ideas_daily_sync() -> None:
         result = run_sync(delivery_dates=delivery_dates, no_update_existing=False)
         _last_ideas_sync_result = result
         if result.get("status") == "error":
-            logger.error("IDeaS scheduled sync aborted: %s", result.get("error"))
+            err = str(result.get("error") or "IDeaS sync failed")
+            logger.error("IDeaS scheduled sync aborted: %s", err)
+            record_update_run(JOB_IDEAS, success=False, error_message=err)
             return
+        record_update_run(JOB_IDEAS, success=True)
         logger.info(
             "IDeaS scheduled sync completed: processed=%s skipped=%s",
             result.get("archives_processed"),
@@ -158,6 +182,7 @@ def _run_ideas_daily_sync() -> None:
     except Exception as exc:
         logger.exception("IDeaS scheduled sync failed: %s", exc)
         _last_ideas_sync_result = {"status": "error", "error": str(exc), "delivery_dates": delivery_dates}
+        record_update_run(JOB_IDEAS, success=False, error_message=str(exc))
         return
 
 
@@ -165,14 +190,44 @@ def _run_lighthouse_daily_sync() -> None:
     """Run Lighthouse rates flight recorder snapshot (all subscriptions) for today."""
     global _last_lighthouse_sync_result
     from sync_lighthouse import run_sync
+    from update_status import JOB_LIGHTHOUSE, record_update_run
 
     logger.info("Starting Lighthouse scheduled sync")
     result = run_sync()
     _last_lighthouse_sync_result = result
     if result.get("status") == "error":
-        logger.error("Lighthouse scheduled sync failed: %s", result.get("error"))
+        err = str(result.get("error") or "Lighthouse sync failed")
+        logger.error("Lighthouse scheduled sync failed: %s", err)
+        record_update_run(JOB_LIGHTHOUSE, success=False, error_message=err)
         return
+    record_update_run(JOB_LIGHTHOUSE, success=True)
     logger.info("Lighthouse scheduled sync completed for snapshot_date=%s", result.get("snapshot_date"))
+
+
+def _run_resy_daily_sync() -> None:
+    """Run Resy Pace capture (today + horizon) into Snowflake."""
+    global _last_resy_sync_result
+    from sync_resy import run_sync
+    from update_status import JOB_RESY, record_update_run
+
+    if not (RESY_EMAIL and RESY_PASSWORD):
+        logger.info("Skipping Resy scheduled sync (RESY_EMAIL / RESY_PASSWORD not set)")
+        record_update_run(JOB_RESY, success=True)
+        return
+    logger.info("Starting Resy Pace scheduled sync")
+    result = run_sync()
+    _last_resy_sync_result = result
+    if result.get("status") == "error":
+        err = str(result.get("error") or "Resy sync failed")
+        logger.error("Resy scheduled sync failed: %s", err)
+        record_update_run(JOB_RESY, success=False, error_message=err)
+        return
+    record_update_run(JOB_RESY, success=True)
+    logger.info(
+        "Resy scheduled sync completed venues=%s snapshots=%s",
+        result.get("venues"),
+        result.get("snapshots"),
+    )
 
 
 def _get_scheduler():
@@ -203,6 +258,15 @@ def _get_scheduler():
             minute=LIGHTHOUSE_SYNC_SCHEDULE_MINUTE,
             id="lighthouse_daily_sync",
             timezone=LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
+        )
+    if RUN_RESY_SYNC_ON_SCHEDULE:
+        sched.add_job(
+            _run_resy_daily_sync,
+            trigger="cron",
+            hour=RESY_SYNC_SCHEDULE_HOUR,
+            minute=RESY_SYNC_SCHEDULE_MINUTE,
+            id="resy_daily_sync",
+            timezone=RESY_SYNC_SCHEDULE_TIMEZONE,
         )
     return sched
 
@@ -264,6 +328,17 @@ async def lifespan(app: FastAPI):
             _format_time_until(lh_next),
             lh_next.isoformat() if lh_next else "?",
         )
+    if RUN_RESY_SYNC_ON_SCHEDULE:
+        resy_job = _scheduler.get_job("resy_daily_sync")
+        resy_next = resy_job.next_run_time if resy_job else None
+        logger.info(
+            "Scheduler started: Resy Pace daily sync at %02d:%02d %s; next in %s (%s)",
+            RESY_SYNC_SCHEDULE_HOUR,
+            RESY_SYNC_SCHEDULE_MINUTE,
+            RESY_SYNC_SCHEDULE_TIMEZONE,
+            _format_time_until(resy_next),
+            resy_next.isoformat() if resy_next else "?",
+        )
     yield
     if _scheduler:
         _scheduler.shutdown(wait=False)
@@ -273,7 +348,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PPC Flight Recorder",
-    description="Daily sync of Google Ads, GA4, Mews PMS, and IDeaS G3 data to Snowflake.",
+    description="Daily sync of Google Ads, GA4, Mews PMS, IDeaS G3, Lighthouse, and Resy Pace data to Snowflake.",
     lifespan=lifespan,
 )
 
@@ -319,6 +394,18 @@ def schedule():
             "snapshot_date": "today",
             "last_sync": _last_lighthouse_sync_result,
         }
+    resy_payload = None
+    if RUN_RESY_SYNC_ON_SCHEDULE:
+        resy_job = _scheduler.get_job("resy_daily_sync")
+        resy_next = resy_job.next_run_time if resy_job else None
+        resy_payload = {
+            "timezone": RESY_SYNC_SCHEDULE_TIMEZONE,
+            "hour": RESY_SYNC_SCHEDULE_HOUR,
+            "minute": RESY_SYNC_SCHEDULE_MINUTE,
+            "next_run": resy_next.isoformat() if resy_next else None,
+            "next_run_in": _format_time_until(resy_next),
+            "last_sync": _last_resy_sync_result,
+        }
     return {
         "scheduler": "running",
         "schedule": {
@@ -331,6 +418,7 @@ def schedule():
         },
         "ideas_schedule": ideas_payload,
         "lighthouse_schedule": lighthouse_payload,
+        "resy_schedule": resy_payload,
         "last_sync": _last_sync_result,
     }
 
@@ -375,6 +463,8 @@ def trigger_ideas_sync(body: Optional[IdeasSyncRequest] = Body(None)):
     else:
         delivery_dates = default_delivery_dates()
 
+    from update_status import JOB_IDEAS, record_update_run
+
     try:
         result = run_sync(
             delivery_dates=delivery_dates,
@@ -383,9 +473,18 @@ def trigger_ideas_sync(body: Optional[IdeasSyncRequest] = Body(None)):
         )
         global _last_ideas_sync_result
         _last_ideas_sync_result = result
+        if result.get("status") == "error":
+            record_update_run(
+                JOB_IDEAS,
+                success=False,
+                error_message=str(result.get("error") or "IDeaS sync failed"),
+            )
+        else:
+            record_update_run(JOB_IDEAS, success=True)
         return result
     except Exception as e:
         logger.exception("Manual IDeaS sync failed: %s", e)
+        record_update_run(JOB_IDEAS, success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -406,6 +505,7 @@ def trigger_lighthouse_sync(body: Optional[LighthouseSyncRequest] = Body(None)):
     Optional body: {"snapshot_date": "2026-06-10", "lookback_days": 364, "shop_length": 365}.
     """
     from sync_lighthouse import run_sync
+    from update_status import JOB_LIGHTHOUSE, record_update_run
 
     global _last_lighthouse_sync_result
     try:
@@ -420,12 +520,16 @@ def trigger_lighthouse_sync(body: Optional[LighthouseSyncRequest] = Body(None)):
         )
         _last_lighthouse_sync_result = result
         if result.get("status") == "error":
-            raise HTTPException(status_code=500, detail=result.get("error") or "Lighthouse sync failed")
+            err = result.get("error") or "Lighthouse sync failed"
+            record_update_run(JOB_LIGHTHOUSE, success=False, error_message=str(err))
+            raise HTTPException(status_code=500, detail=err)
+        record_update_run(JOB_LIGHTHOUSE, success=True)
         return result
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Manual Lighthouse sync failed: %s", e)
+        record_update_run(JOB_LIGHTHOUSE, success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -436,6 +540,7 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
     Optional body: {"date": "YYYY-MM-DD", "control_state_only": true} or {"control_state_device_only": true} or {"control_state_conversions_only": true} etc.
     """
     from sync import run_sync
+    from update_status import JOB_PPC, record_update_run
 
     if body and body.date:
         try:
@@ -462,6 +567,7 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
             control_state_device_only=control_state_device_only,
             control_state_conversions_only=control_state_conversions_only,
         )
+        record_update_run(JOB_PPC, success=True)
         partial = bool(
             control_state_only
             or control_state_keyword_only
@@ -469,7 +575,14 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
             or control_state_device_only
             or control_state_conversions_only
         )
-        _run_mews_after_ppc(snapshot_date, partial_ppc_sync=partial)
+        try:
+            _run_mews_after_ppc(snapshot_date, partial_ppc_sync=partial)
+        except Exception as mews_exc:
+            logger.exception(
+                "Mews post-sync failed for %s (PPC status already recorded): %s",
+                snapshot_date.isoformat(),
+                mews_exc,
+            )
         return {
             "status": "ok",
             "snapshot_date": snapshot_date.isoformat(),
@@ -482,4 +595,53 @@ def trigger_sync(body: Optional[SyncRequest] = Body(None)):
         }
     except Exception as e:
         logger.exception("Manual sync failed: %s", e)
+        record_update_run(JOB_PPC, success=False, error_message=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ResySyncRequest(BaseModel):
+    venue_ids: Optional[list[int]] = None
+    horizon: Optional[int] = None
+    realize_lookback: Optional[int] = None
+    toast_days: Optional[int] = None
+    dry_run: Optional[bool] = False
+    skip_toast: Optional[bool] = False
+    venues_only: Optional[bool] = False
+
+
+@app.post("/sync/resy")
+def trigger_resy_sync(body: Optional[ResySyncRequest] = Body(None)):
+    """
+    Run Resy Pace flight recorder (Resy analytics + Toast -> Snowflake).
+    Optional body: {"venue_ids": [1], "horizon": 7, "dry_run": true}.
+    """
+    from sync_resy import run_sync
+    from update_status import JOB_RESY, record_update_run
+
+    if not (RESY_EMAIL and RESY_PASSWORD):
+        raise HTTPException(status_code=400, detail="RESY_EMAIL / RESY_PASSWORD not configured")
+    global _last_resy_sync_result
+    try:
+        result = run_sync(
+            venue_ids=body.venue_ids if body else None,
+            horizon=body.horizon if body else None,
+            realize_lookback=body.realize_lookback if body else None,
+            toast_days=body.toast_days if body else None,
+            dry_run=bool(body and body.dry_run),
+            skip_toast=bool(body and body.skip_toast),
+            venues_only=bool(body and body.venues_only),
+        )
+        _last_resy_sync_result = result
+        if result.get("status") == "error":
+            err = result.get("error") or "Resy sync failed"
+            record_update_run(JOB_RESY, success=False, error_message=str(err))
+            raise HTTPException(status_code=500, detail=err)
+        if not (body and body.dry_run):
+            record_update_run(JOB_RESY, success=True)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Manual Resy sync failed: %s", e)
+        record_update_run(JOB_RESY, success=False, error_message=str(e))
         raise HTTPException(status_code=500, detail=str(e))

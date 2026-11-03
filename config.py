@@ -167,6 +167,27 @@ RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE = os.getenv("RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE", "
 )
 
 
+# ----- Resy Pace Flight Recorder (Resy analytics + Toast -> Snowflake) -----
+RESY_EMAIL = os.getenv("RESY_EMAIL", "")
+RESY_PASSWORD = os.getenv("RESY_PASSWORD", "")
+RESY_GUEST_SALT = os.getenv("RESY_GUEST_SALT", "methodco-resy-pace-v1")
+RESY_HORIZON = int(os.getenv("RESY_HORIZON", "90"))
+RESY_REALIZE_LOOKBACK = int(os.getenv("RESY_REALIZE_LOOKBACK", "3"))
+RESY_REQUEST_DELAY_SEC = float(os.getenv("RESY_REQUEST_DELAY_SEC", "0.12"))
+RESY_FORCE_ZERO = os.getenv("RESY_FORCE_ZERO", "").strip().lower() in ("1", "true", "yes")
+TOAST_STANDARD_CLIENT_ID = os.getenv("TOAST_STANDARD_CLIENT_ID", "")
+TOAST_STANDARD_CLIENT_SECRET = os.getenv("TOAST_STANDARD_CLIENT_SECRET", "")
+TOAST_DAYS = int(os.getenv("TOAST_DAYS", "3"))
+RESY_SYNC_SCHEDULE_TIMEZONE = os.getenv("RESY_SYNC_SCHEDULE_TIMEZONE", SYNC_SCHEDULE_TIMEZONE)
+RESY_SYNC_SCHEDULE_HOUR = int(os.getenv("RESY_SYNC_SCHEDULE_HOUR", "6"))
+RESY_SYNC_SCHEDULE_MINUTE = int(os.getenv("RESY_SYNC_SCHEDULE_MINUTE", "0"))
+RUN_RESY_SYNC_ON_SCHEDULE = os.getenv("RUN_RESY_SYNC_ON_SCHEDULE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
 def normalize_customer_id(customer_id: Optional[str]) -> str:
     """Normalize Google Ads customer ID for storage (no dashes)."""
     if not customer_id:
