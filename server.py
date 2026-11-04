@@ -5,7 +5,7 @@ Runs Uvicorn on port 9001. Schedulers:
   - PPC (+ optional Mews): default 9:30 PM — syncs yesterday only
   - IDeaS G3: default 9:00 AM — syncs yesterday + today delivery dates
   - Lighthouse rates: default 9:30 AM — records today's rates/parity snapshot
-  - Resy Pace: default 6:00 AM — reservations, covers, and Toast turns
+  - Resy Pace: default 06:00, 11:00, 16:00, 22:00 — reservations, covers, and Toast turns
 
   cd ppc_flight_recorder
   pip install -r requirements.txt
@@ -34,9 +34,9 @@ from config import (
     RUN_LIGHTHOUSE_SYNC_ON_SCHEDULE,
     RESY_EMAIL,
     RESY_PASSWORD,
-    RESY_SYNC_SCHEDULE_HOUR,
-    RESY_SYNC_SCHEDULE_MINUTE,
+    RESY_SYNC_SCHEDULE_TIMES,
     RESY_SYNC_SCHEDULE_TIMEZONE,
+    resy_schedule_labels,
     RUN_RESY_SYNC_ON_SCHEDULE,
     MEWS_ACCESS_TOKEN,
     MEWS_CLIENT_TOKEN,
@@ -270,13 +270,28 @@ def _get_scheduler():
             timezone=LIGHTHOUSE_SYNC_SCHEDULE_TIMEZONE,
         )
     if RUN_RESY_SYNC_ON_SCHEDULE:
+        from apscheduler.triggers.combining import OrTrigger
+        from apscheduler.triggers.cron import CronTrigger
+
+        # Pair each HH:MM. A single cron hour list with one minute would fire
+        # every combination when the minutes differ.
+        resy_trigger = OrTrigger(
+            [
+                CronTrigger(
+                    hour=hour,
+                    minute=minute,
+                    timezone=RESY_SYNC_SCHEDULE_TIMEZONE,
+                )
+                for hour, minute in RESY_SYNC_SCHEDULE_TIMES
+            ]
+        )
         sched.add_job(
             _run_resy_daily_sync,
-            trigger="cron",
-            hour=RESY_SYNC_SCHEDULE_HOUR,
-            minute=RESY_SYNC_SCHEDULE_MINUTE,
+            trigger=resy_trigger,
             id="resy_daily_sync",
-            timezone=RESY_SYNC_SCHEDULE_TIMEZONE,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=60 * 60,
         )
     return sched
 
@@ -342,9 +357,8 @@ async def lifespan(app: FastAPI):
         resy_job = _scheduler.get_job("resy_daily_sync")
         resy_next = resy_job.next_run_time if resy_job else None
         logger.info(
-            "Scheduler started: Resy Pace daily sync at %02d:%02d %s; next in %s (%s)",
-            RESY_SYNC_SCHEDULE_HOUR,
-            RESY_SYNC_SCHEDULE_MINUTE,
+            "Scheduler started: Resy Pace sync at %s %s; next in %s (%s)",
+            ", ".join(resy_schedule_labels()),
             RESY_SYNC_SCHEDULE_TIMEZONE,
             _format_time_until(resy_next),
             resy_next.isoformat() if resy_next else "?",
@@ -410,8 +424,7 @@ def schedule():
         resy_next = resy_job.next_run_time if resy_job else None
         resy_payload = {
             "timezone": RESY_SYNC_SCHEDULE_TIMEZONE,
-            "hour": RESY_SYNC_SCHEDULE_HOUR,
-            "minute": RESY_SYNC_SCHEDULE_MINUTE,
+            "times": resy_schedule_labels(),
             "next_run": resy_next.isoformat() if resy_next else None,
             "next_run_in": _format_time_until(resy_next),
             "last_sync": _last_resy_sync_result,

@@ -94,7 +94,7 @@ Creates: `ppc_campaign_control_state_daily`, `ppc_campaign_control_diff_daily`, 
    python sync_resy.py
    ```
    If the analytics token cannot call the Reservations report, the sync logs in with Playwright Chromium (`pip install playwright` then `python -m playwright install chromium`).
-4. **Scheduler** (when running `uvicorn server:app`): Resy runs at **6:00 AM** by default (`RESY_SYNC_SCHEDULE_HOUR=6`, `RESY_SYNC_SCHEDULE_MINUTE=0`). Disable with `RUN_RESY_SYNC_ON_SCHEDULE=0`.
+4. **Scheduler** (when running `uvicorn server:app`): Resy runs at the clock times in `RESY_SYNC_SCHEDULE_HOUR` (default `06:00,11:00,16:00,22:00` America/New_York). That keeps the open book current before lunch and before dinner, and picks up realized covers after close. A run still in progress is not started again. Disable with `RUN_RESY_SYNC_ON_SCHEDULE=0`.
 5. Manual API: `POST /sync/resy` (optional body `{"venue_ids": [1], "horizon": 7, "dry_run": true}`).
 
 ### PMS Mews (Connector API)
@@ -254,7 +254,7 @@ After each Resy / IDeaS / Lighthouse / PPC sync (scheduler, `POST /sync*`, or CL
 
 | Job | Schedule (default EST) | `app_settings` key |
 |-----|------------------------|--------------------|
-| Resy Pace | 06:00 | `daily_update_last_run:ppc_fr_resy` |
+| Resy Pace | 06:00, 11:00, 16:00, 22:00 | `daily_update_last_run:ppc_fr_resy` |
 | IDeaS G3 | 09:00 | `daily_update_last_run:ppc_fr_ideas` |
 | Lighthouse API | 09:30 | `daily_update_last_run:ppc_fr_lighthouse` |
 | PPC Google Ads | 21:30 | `daily_update_last_run:ppc_fr_ppc` |

@@ -179,8 +179,55 @@ TOAST_STANDARD_CLIENT_ID = os.getenv("TOAST_STANDARD_CLIENT_ID", "")
 TOAST_STANDARD_CLIENT_SECRET = os.getenv("TOAST_STANDARD_CLIENT_SECRET", "")
 TOAST_DAYS = int(os.getenv("TOAST_DAYS", "3"))
 RESY_SYNC_SCHEDULE_TIMEZONE = os.getenv("RESY_SYNC_SCHEDULE_TIMEZONE", SYNC_SCHEDULE_TIMEZONE)
-RESY_SYNC_SCHEDULE_HOUR = int(os.getenv("RESY_SYNC_SCHEDULE_HOUR", "6"))
-RESY_SYNC_SCHEDULE_MINUTE = int(os.getenv("RESY_SYNC_SCHEDULE_MINUTE", "0"))
+# Comma-separated America/New_York clock times. One morning pull goes stale
+# while the Mac capture keeps polling. These four cover the open book before
+# lunch, before dinner, and realized covers after close — without stacking on
+# IDeaS (09:00), Lighthouse (09:30), or the PPC sync (21:30).
+# A bare hour such as "6" still means that hour at RESY_SYNC_SCHEDULE_MINUTE (default 0).
+_RESY_SYNC_SCHEDULE_HOUR_DEFAULT = "06:00,11:00,16:00,22:00"
+
+
+def _parse_resy_schedule_times(raw: str, fallback_minute: int) -> list[tuple[int, int]]:
+    slots: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            hour_text, minute_text = part.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        else:
+            hour = int(part)
+            minute = fallback_minute
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError(f"RESY_SYNC_SCHEDULE_HOUR time out of range: {part}")
+        slot = (hour, minute)
+        if slot not in seen:
+            seen.add(slot)
+            slots.append(slot)
+    if not slots:
+        raise ValueError("RESY_SYNC_SCHEDULE_HOUR is empty")
+    return slots
+
+
+def _resy_fallback_minute() -> int:
+    raw = os.getenv("RESY_SYNC_SCHEDULE_MINUTE", "0").strip() or "0"
+    minute = int(raw)
+    if minute < 0 or minute > 59:
+        raise ValueError("RESY_SYNC_SCHEDULE_MINUTE must be 0-59")
+    return minute
+
+
+RESY_SYNC_SCHEDULE_TIMES = _parse_resy_schedule_times(
+    os.getenv("RESY_SYNC_SCHEDULE_HOUR", _RESY_SYNC_SCHEDULE_HOUR_DEFAULT),
+    _resy_fallback_minute(),
+)
+
+
+def resy_schedule_labels() -> list[str]:
+    return [f"{hour:02d}:{minute:02d}" for hour, minute in RESY_SYNC_SCHEDULE_TIMES]
 RUN_RESY_SYNC_ON_SCHEDULE = os.getenv("RUN_RESY_SYNC_ON_SCHEDULE", "1").strip().lower() in (
     "1",
     "true",
