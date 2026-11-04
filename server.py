@@ -211,8 +211,9 @@ def _run_resy_daily_sync() -> None:
     from update_status import JOB_RESY, record_update_run
 
     if not (RESY_EMAIL and RESY_PASSWORD):
-        logger.info("Skipping Resy scheduled sync (RESY_EMAIL / RESY_PASSWORD not set)")
-        record_update_run(JOB_RESY, success=True)
+        err = "RESY_EMAIL / RESY_PASSWORD not set — skipped (no Snowflake write)"
+        logger.error("Skipping Resy scheduled sync: %s", err)
+        record_update_run(JOB_RESY, success=False, error_message=err)
         return
     logger.info("Starting Resy Pace scheduled sync")
     result = run_sync()
@@ -220,6 +221,15 @@ def _run_resy_daily_sync() -> None:
     if result.get("status") == "error":
         err = str(result.get("error") or "Resy sync failed")
         logger.error("Resy scheduled sync failed: %s", err)
+        record_update_run(JOB_RESY, success=False, error_message=err)
+        return
+    # Degraded = some venues aborted; still wrote others, but Update Health should not look green.
+    if result.get("status") == "degraded" or result.get("skipped_venues"):
+        err = (
+            f"Resy sync degraded; skipped venues={result.get('skipped_venues')}; "
+            f"snapshots={result.get('snapshots')}"
+        )
+        logger.warning("%s", err)
         record_update_run(JOB_RESY, success=False, error_message=err)
         return
     record_update_run(JOB_RESY, success=True)

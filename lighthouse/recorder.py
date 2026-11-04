@@ -55,7 +55,8 @@ OTAS = [s.strip() for s in os.getenv("LIGHTHOUSE_FR_OTAS", "bookingdotcom,expedi
 COMPSET_IDS = [int(s) for s in os.getenv("LIGHTHOUSE_FR_COMPSET_IDS", "1,2").split(",") if s.strip()]
 REQUEST_DELAY_SECONDS = float(os.getenv("LIGHTHOUSE_FR_REQUEST_DELAY", "0.6"))
 SNOWFLAKE_UPLOAD_BATCH_SIZE = max(1, int(os.getenv("LIGHTHOUSE_FR_SNOWFLAKE_BATCH_SIZE", "500")))
-MAX_RATES_REQUESTS = max(1, int(os.getenv("LIGHTHOUSE_FR_MAX_RATES_REQUESTS", "28")))
+# Lighthouse fair-usage: max ~20 requests per API per subscription per 24h.
+MAX_RATES_REQUESTS = max(1, int(os.getenv("LIGHTHOUSE_FR_MAX_RATES_REQUESTS", "20")))
 DEMAND_ARRIVAL_DATES = max(1, min(352, int(os.getenv("LIGHTHOUSE_DEMAND_ARRIVAL_DATES", "120"))))
 UPDATE_DEMAND = os.getenv("LIGHTHOUSE_UPDATE_DEMAND", "1").strip().lower() not in ("0", "false", "no")
 
@@ -625,8 +626,9 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
     if hotels_only:
         if skip_upload:
             log("recorder", "Skipping Snowflake upload (--skip-upload)")
-            return True
-        return upload_to_snowflake([], [], [], hotel_rows, competitor_rows, write_snapshots=False)
+            return {"ok": True, "errors": [], "hotels_only": True}
+        uploaded = upload_to_snowflake([], [], [], hotel_rows, competitor_rows, write_snapshots=False)
+        return {"ok": bool(uploaded), "errors": [] if uploaded else ["hotels upload failed"], "hotels_only": True, "uploaded": bool(uploaded)}
 
     if subscription_ids:
         hotels = [h for h in hotels if h.get("subscription_id") in subscription_ids]
@@ -712,22 +714,38 @@ def record_snapshot(subscription_ids=None, lookback_days=None, shop_length=None,
                     if row:
                         demand_rows.append(row)
             except Exception as e:
-                errors.append(f"demand {sub_id}: {e}")
-                log("ERROR", f"demand {sub_id}: {e}")
+                # Demand requires Market Insight; 403 unauthorized is expected without it —
+                # do not fail the whole rates/parity snapshot for that.
+                msg = f"demand {sub_id}: {e}"
+                if "403" in str(e) and "unauthorized" in str(e).lower():
+                    log("WARN", f"{msg} (skipped; set LIGHTHOUSE_UPDATE_DEMAND=0 to silence)")
+                else:
+                    errors.append(msg)
+                    log("ERROR", msg)
 
     log("recorder", f"Collected rows: rates={len(rates_rows)} roomtyperates={len(roomtype_rows)} "
                     f"parities={len(parity_rows)} demand={len(demand_rows)} (errors: {len(errors)})")
 
     if skip_upload:
         log("recorder", "Skipping Snowflake upload (--skip-upload)")
-        return len(errors) == 0
+        return {"ok": len(errors) == 0, "errors": errors, "rates": len(rates_rows),
+                "roomtyperates": len(roomtype_rows), "parities": len(parity_rows),
+                "demand": len(demand_rows)}
 
     ok = upload_to_snowflake(
         rates_rows, roomtype_rows, parity_rows, hotel_rows, competitor_rows,
         snapshot_date=snapshot_date,
         demand_rows=demand_rows,
     )
-    return ok and len(errors) == 0
+    return {
+        "ok": bool(ok) and len(errors) == 0,
+        "errors": errors,
+        "rates": len(rates_rows),
+        "roomtyperates": len(roomtype_rows),
+        "parities": len(parity_rows),
+        "demand": len(demand_rows),
+        "uploaded": bool(ok),
+    }
 
 
 def upload_to_snowflake(

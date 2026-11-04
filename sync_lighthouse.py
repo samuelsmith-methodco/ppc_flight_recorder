@@ -69,7 +69,7 @@ def run_sync(
     try:
         from lighthouse.recorder import record_snapshot
 
-        ok = record_snapshot(
+        outcome = record_snapshot(
             subscription_ids=subscription_ids,
             skip_upload=skip_upload,
             hotels_only=hotels_only,
@@ -79,6 +79,11 @@ def run_sync(
             compset_ids=compset_ids,
             snapshot_date=snapshot_date_iso,
         )
+        # record_snapshot returns a result dict (ok/errors/row counts).
+        if isinstance(outcome, bool):
+            outcome = {"ok": outcome, "errors": [] if outcome else ["recorder finished with errors"]}
+        ok = bool(outcome.get("ok"))
+        errors = outcome.get("errors") or []
         result = {
             "status": "ok" if ok else "error",
             "snapshot_date": snapshot_date_iso,
@@ -88,9 +93,18 @@ def run_sync(
             "shop_length": shop_length,
             "otas": otas,
             "compset_ids": compset_ids,
+            "rates": outcome.get("rates"),
+            "roomtyperates": outcome.get("roomtyperates"),
+            "parities": outcome.get("parities"),
+            "demand": outcome.get("demand"),
+            "uploaded": outcome.get("uploaded"),
         }
         if not ok:
-            result["error"] = "recorder finished with errors (see logs)"
+            detail = "; ".join(str(e) for e in errors[:5]) if errors else "recorder finished with errors (see logs)"
+            if len(errors) > 5:
+                detail += f" (+{len(errors) - 5} more)"
+            result["error"] = detail
+            result["errors"] = errors
         return result
     except Exception as exc:
         logger.exception("Lighthouse sync failed: %s", exc)

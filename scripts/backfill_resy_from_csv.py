@@ -211,27 +211,105 @@ def prep_events(path: Path) -> pd.DataFrame:
     )
 
 
+def prep_snapshot(path: Path) -> pd.DataFrame:
+    raw = _load_csv(path)
+    df = pd.DataFrame(
+        {
+            "venue_id": raw["venue_id"].astype(int),
+            "target_date": pd.to_datetime(raw["target_date"], errors="coerce").dt.date,
+            "snapshot_date": pd.to_datetime(raw["snapshot_date"], errors="coerce").dt.date,
+            "snapshot_ts": _ts(raw.get("snapshot_ts")),
+            "days_out": pd.to_numeric(raw.get("days_out"), errors="coerce"),
+            "covers_on_books": pd.to_numeric(raw.get("covers_on_books"), errors="coerce"),
+            "reservation_count": pd.to_numeric(raw.get("reservation_count"), errors="coerce"),
+            "party_size_avg": pd.to_numeric(raw.get("party_size_avg"), errors="coerce"),
+            "cancelled_covers_cum": pd.to_numeric(raw.get("cancelled_covers_cum"), errors="coerce"),
+            "walkin_covers": pd.to_numeric(raw.get("walkin_covers"), errors="coerce"),
+            "covers_seated": pd.to_numeric(raw.get("covers_seated"), errors="coerce"),
+            "no_show_covers": pd.to_numeric(raw.get("no_show_covers"), errors="coerce"),
+            "is_eod": _bool(raw.get("is_eod")),
+            "is_realized": _bool(raw.get("is_realized")),
+            "source": raw.get("source"),
+            "notes": raw.get("notes"),
+        }
+    )
+    return df.dropna(subset=["venue_id", "target_date", "snapshot_date"]).drop_duplicates(
+        subset=["venue_id", "target_date", "snapshot_date"], keep="last"
+    )
+
+
+TABLE_PREP = {
+    "resy_venue": ("venue_rows.csv", prep_venue),
+    "resy_daily_covers_actual": ("daily_covers_actual_rows.csv", prep_covers),
+    "resy_toast_daily": ("toast_daily_rows.csv", prep_toast),
+    "resy_guest": ("guest_rows.csv", prep_guest),
+    "resy_reservation_ledger": ("reservation_ledger_rows.csv", prep_ledger),
+    "resy_reservation_status_event": ("reservation_status_event_rows.csv", prep_events),
+    "resy_reservation_snapshot": ("reservation_snapshot_rows.csv", prep_snapshot),
+}
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     p = argparse.ArgumentParser()
-    p.add_argument("--dir", required=True, help="Folder with Supabase CSV exports")
+    p.add_argument("--dir", default=None, help="Folder with Supabase CSV exports")
+    p.add_argument(
+        "--file",
+        default=None,
+        help="Single CSV path (use with --table, e.g. resy_reservation_snapshot)",
+    )
+    p.add_argument(
+        "--table",
+        default=None,
+        help="Load only this Snowflake table (requires matching CSV in --dir or --file)",
+    )
+    p.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        help="Subset of tables when using --dir (default: all present)",
+    )
     args = p.parse_args()
-    d = Path(args.dir)
-    files = {
-        "resy_venue": ("venue_rows.csv", prep_venue),
-        "resy_daily_covers_actual": ("daily_covers_actual_rows.csv", prep_covers),
-        "resy_toast_daily": ("toast_daily_rows.csv", prep_toast),
-        "resy_guest": ("guest_rows.csv", prep_guest),
-        "resy_reservation_ledger": ("reservation_ledger_rows.csv", prep_ledger),
-        "resy_reservation_status_event": ("reservation_status_event_rows.csv", prep_events),
-    }
-    missing = [name for name, (fn, _) in files.items() if not (d / fn).exists()]
-    if missing:
-        logger.error("Missing CSVs for %s in %s", missing, d)
-        return 1
+
+    if args.file:
+        if not args.table:
+            logger.error("--file requires --table")
+            return 1
+        if args.table not in TABLE_PREP:
+            logger.error("Unknown table %s; known: %s", args.table, sorted(TABLE_PREP))
+            return 1
+        path = Path(args.file)
+        if not path.exists():
+            logger.error("File not found: %s", path)
+            return 1
+        jobs = [(args.table, path, TABLE_PREP[args.table][1])]
+    else:
+        if not args.dir:
+            logger.error("Provide --dir or --file")
+            return 1
+        d = Path(args.dir)
+        if args.only:
+            wanted = list(args.only)
+        elif args.table:
+            wanted = [args.table]
+        else:
+            wanted = list(TABLE_PREP)
+        jobs = []
+        missing = []
+        for table in wanted:
+            fn, prep = TABLE_PREP[table]
+            path = d / fn
+            if path.exists():
+                jobs.append((table, path, prep))
+            else:
+                missing.append(table)
+        if not jobs:
+            logger.error("No CSVs found in %s (missing %s)", d, missing)
+            return 1
+        if missing:
+            logger.warning("Skipping missing CSVs: %s", missing)
 
     with get_connection() as conn:
-        # ensure tables exist
         ddl = _ROOT / "sql" / "resy-pace-flight-recorder-tables.sql"
         cur = conn.cursor()
         try:
@@ -240,9 +318,9 @@ def main() -> int:
             cur.close()
 
         totals = {}
-        for table, (fn, prep) in files.items():
-            logger.info("Preparing %s from %s", table, fn)
-            df = prep(d / fn)
+        for table, path, prep in jobs:
+            logger.info("Preparing %s from %s", table, path)
+            df = prep(path)
             totals[table] = write_replace(conn, table, df)
         logger.info("Backfill done: %s", totals)
     return 0
