@@ -20,6 +20,53 @@ ARCHIVE_FILENAME_RE = re.compile(
 DATE_FMT = "%d-%b-%Y"
 TS_FMT = "%d-%b-%Y %H:%M"
 
+# IDeaS feeds mostly use dd-Mon-YYYY[ HH:MM], but individual fields (esp.
+# Informational / Evaluated On) sometimes omit time or use ISO / numeric forms.
+DATE_FORMATS: tuple[str, ...] = (
+    DATE_FMT,
+    "%d-%B-%Y",
+    "%d-%b-%y",
+    "%d-%B-%y",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%Y%m%d",
+    "%d %b %Y",
+    "%d %B %Y",
+)
+
+TIMESTAMP_FORMATS: tuple[str, ...] = (
+    TS_FMT,
+    "%d-%b-%Y %H:%M:%S",
+    "%d-%B-%Y %H:%M",
+    "%d-%B-%Y %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d %b %Y %H:%M",
+    "%d %b %Y %H:%M:%S",
+    "%d %B %Y %H:%M",
+    "%d %B %Y %H:%M:%S",
+)
+
+MONTH_YEAR_FORMATS: tuple[str, ...] = (
+    "%b %Y",
+    "%B %Y",
+    "%Y-%m",
+    "%m/%Y",
+    "%b-%Y",
+    "%B-%Y",
+    "%Y%m",
+)
+
 
 @dataclass(frozen=True)
 class PsvFileMeta:
@@ -77,16 +124,62 @@ def _blank(value: str | None) -> bool:
     return value is None or not str(value).strip()
 
 
+def _normalize_dt_text(value: str) -> str:
+    # Collapse repeated whitespace from ragged PSV cells.
+    return " ".join(value.strip().split())
+
+
+def _strptime_first(value: str, formats: tuple[str, ...]) -> datetime | None:
+    text = _normalize_dt_text(value)
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    # ISO-8601 with optional timezone offset, e.g. 2026-11-05T14:30:00+00:00
+    iso = text
+    if iso.endswith("Z"):
+        iso = iso[:-1]
+    try:
+        return datetime.fromisoformat(iso)
+    except ValueError:
+        pass
+    # Last-resort flexible parse via pandas (already a project dependency).
+    try:
+        import pandas as pd
+
+        parsed = pd.to_datetime(text, errors="coerce", utc=False)
+        if pd.isna(parsed):
+            return None
+        # Normalize pandas Timestamp / numpy datetime64 to naive datetime.
+        if hasattr(parsed, "to_pydatetime"):
+            dt = parsed.to_pydatetime()
+            if getattr(dt, "tzinfo", None) is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt
+    except Exception:
+        return None
+    return None
+
+
 def parse_date(value: str) -> date | None:
     if _blank(value):
         return None
-    return datetime.strptime(value.strip(), DATE_FMT).date()
+    # Accept date-only or datetime values; store date portion.
+    dt = _strptime_first(value, DATE_FORMATS + TIMESTAMP_FORMATS)
+    if dt is None:
+        raise ValueError(f"Unrecognized date value: {value!r}")
+    return dt.date()
 
 
 def parse_timestamp(value: str) -> datetime | None:
     if _blank(value):
         return None
-    return datetime.strptime(value.strip(), TS_FMT)
+    # Prefer full timestamps, then fall back to date-only (midnight).
+    dt = _strptime_first(value, TIMESTAMP_FORMATS + DATE_FORMATS)
+    if dt is None:
+        raise ValueError(f"Unrecognized timestamp value: {value!r}")
+    return dt
 
 
 def parse_int(value: str) -> int | None:
@@ -122,7 +215,10 @@ def parse_month_year(value: str) -> date | None:
     """Parse IDeaS month labels like 'Apr 2026' to the first day of that month."""
     if _blank(value):
         return None
-    return datetime.strptime(value.strip(), "%b %Y").date()
+    dt = _strptime_first(value, MONTH_YEAR_FORMATS + DATE_FORMATS)
+    if dt is None:
+        raise ValueError(f"Unrecognized month/year value: {value!r}")
+    return date(dt.year, dt.month, 1)
 
 
 COERCE: dict[str, Callable[[str], Any]] = {
